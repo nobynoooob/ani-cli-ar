@@ -61,71 +61,57 @@ https://github.com/user-attachments/assets/a6c6882a-7c50-4a8d-aa9c-e56a6d4ff7eb
 
 ### Requirements
 Before installing, make sure you have: 
-- **Python 3.8 or newer** (Python 3.12 recommended, avoid 3.13+ due to numpy compilation issues)
-- **MPV media player** (for streaming)
-- **ffmpeg** (for video processing)
-- **fzf** (for fuzzing results)
+- **Python 3.8 or newer** (Python 3.12 recommended)
+- **MPV** or **VLC** media player (for streaming)
 
-> **⚠️ Important Note:** if you are using mac os, build from source.
-
-### Method 1: Install via pip (Recommended)
-
-The easiest way to get started: 
+### Method 1: One-Line Installer (Recommended)
 
 ```bash
-pip install ani-cli-arabic
+curl -fsSL https://raw.githubusercontent.com/np4abdou1/ani-cli-arabic/main/install.sh | sh
+```
+
+This auto-detects your environment (Linux, macOS, Termux) and installs via `pipx` or `pip`.
+
+### Method 2: Install via pip / pipx
+
+```bash
+# Direct from GitHub (always latest)
+pip install git+https://github.com/np4abdou1/ani-cli-arabic.git
+
+# Or from PyPI (stable releases)
+pip install ani-cli-ar
+
+# Or with pipx (isolated environment, recommended)
+pipx install ani-cli-ar
 ```
 
 Launch the app:
 ```bash
-ani-cli-arabic
-# or use the shorter command
 ani-cli-ar
 ```
 
-To update to the latest version:
+To update:
 ```bash
-pip install --upgrade ani-cli-arabic
+pip install --upgrade ani-cli-ar
 ```
 
-### Method 2: Arch Linux (AUR)
+### Method 3: Arch Linux (AUR)
 
 For Arch Linux users, install from the AUR: 
 
 ```bash
-# Using yay
-yay -S ani-cli-arabic
-
-# Using paru
-paru -S ani-cli-arabic
+yay -S ani-cli-ar
+# or
+paru -S ani-cli-ar
 ```
 
-### Method 3: From Source
+### Method 4: From Source (Development)
 
-Want to run the development version?
-
-**On Windows:**
-```powershell
-# Install MPV first
-scoop install mpv
-
-# Clone the repo and install dependencies
-git clone https://github.com/np4abdou1/ani-cli-arabic.git
-cd ani-cli-arabic
-pip install -r requirements.txt
-python main.py
-```
-
-**On Linux (Debian/Ubuntu):**
 ```bash
-# Get the dependencies
-sudo apt update && sudo apt install mpv git python3-pip ffmpeg
-
-# Clone and run
 git clone https://github.com/np4abdou1/ani-cli-arabic.git
 cd ani-cli-arabic
-pip install -r requirements.txt
-python3 main.py
+pip install -e .
+ani-cli-ar
 ```
 
 ---
@@ -251,6 +237,39 @@ Special thanks to everyone who helped make this project happen:
 - [@Anas-Tou](https://github.com/Anas-Tou) - Contributor
 
 Want to contribute? Feel free to open issues or submit pull requests!
+
+---
+
+## 🔧 Build & Release (for maintainers)
+
+### Build the package
+
+```bash
+# Install build tools
+pip install build twine
+
+# Build source distribution and wheel
+python -m build
+
+# Check the package
+twine check dist/*
+```
+
+### Publish to PyPI
+
+```bash
+# Upload to PyPI
+twine upload dist/*
+
+# Or for test PyPI first:
+# twine upload --repository-url https://test.pypi.org/legacy/ dist/*
+```
+
+### Installing from a local build
+
+```bash
+pip install dist/ani_cli_arabic-*.whl
+```
 
 ---
 

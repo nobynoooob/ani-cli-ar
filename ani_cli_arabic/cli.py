@@ -4,12 +4,12 @@ import subprocess
 import shutil
 import time
 import re
-from src.api import AnimeAPI
-from src.player import PlayerManager
-from src.models import QualityOption
-from src.history import HistoryManager
-from src.version import APP_VERSION
-from src.config import MINIMAL_ASCII_ART, GOODBYE_ART, THEMES
+from ani_cli_arabic.api import AnimeAPI
+from ani_cli_arabic.player import PlayerManager
+from ani_cli_arabic.models import QualityOption
+from ani_cli_arabic.history import HistoryManager
+from ani_cli_arabic.version import APP_VERSION
+from ani_cli_arabic.config import MINIMAL_ASCII_ART, GOODBYE_ART, THEMES
 from rich.console import Console
 from rich.text import Text
 from rich.panel import Panel
@@ -564,11 +564,11 @@ def run_simple_cli(query=None, deps=None):
                             language_override=deps.get('language_override'))
     else:
         # Fallback for old calls (should not happen with new app structure)
-        from src.api import AnimeAPI
-        from src.player import PlayerManager
-        from src.history import HistoryManager
-        from src.settings import SettingsManager
-        from src.discord_rpc import DiscordRPCManager
+        from ani_cli_arabic.api import AnimeAPI
+        from ani_cli_arabic.player import PlayerManager
+        from ani_cli_arabic.history import HistoryManager
+        from ani_cli_arabic.settings import SettingsManager
+        from ani_cli_arabic.discord_rpc import DiscordRPCManager
         cli = AniCliWrapper(AnimeAPI(), PlayerManager(console=None), HistoryManager(), SettingsManager(), DiscordRPCManager())
 
     exit_code = 0

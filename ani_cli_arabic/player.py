@@ -120,8 +120,6 @@ class PlayerManager:
                 print(msg, file=sys.stderr)
             return
 
-        print(f"[DEBUG] Playing URL: {url}")
-
         available_players = self.get_available_players()
         
         if not available_players:

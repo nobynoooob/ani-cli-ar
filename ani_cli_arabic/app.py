@@ -63,8 +63,10 @@ class AniCliArApp:
 
         if args.sub:
             self._language_override = 'English Sub'
+            self.settings.set('preferred_language', 'English Sub')
         elif args.dub:
             self._language_override = 'English Dub'
+            self.settings.set('preferred_language', 'English Dub')
 
         initial_query = " ".join(args.query) if args.query else None
 
