@@ -22,9 +22,9 @@ class SettingsManager:
             "player": "mpv",
             "auto_next": False,
             "discord_rpc": True,
-            "show_donation": True,
             "theme": "blue",
-            "analytics": True  # Allow users to opt-out of analytics
+            "analytics": True,
+            "preferred_language": "Arabic Sub"
         }
         
         if not self.config_file.exists():
@@ -46,8 +46,8 @@ class SettingsManager:
             import sys
             print(f"Warning: Failed to save settings: {e}", file=sys.stderr)
 
-    def get(self, key):
-        return self.settings.get(key)
+    def get(self, key, default=None):
+        return self.settings.get(key, default)
 
     def set(self, key, value):
         self.settings[key] = value

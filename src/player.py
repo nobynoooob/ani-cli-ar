@@ -110,7 +110,18 @@ class PlayerManager:
 
         return players
 
-    def play(self, url: str, title: str, player_type: str = 'ask'):
+    def play(self, url: str, title: str, player_type: str = 'ask', headers: Optional[dict] = None):
+        if not url or not (url.startswith("http://") or url.startswith("https://") or url.startswith("rtmp://")):
+            msg = "Error: Extracted stream URL is invalid or empty."
+            if self.console:
+                from rich.text import Text
+                self.console.print(Text(msg, style="bold red"))
+            else:
+                print(msg, file=sys.stderr)
+            return
+
+        print(f"[DEBUG] Playing URL: {url}")
+
         available_players = self.get_available_players()
         
         if not available_players:
@@ -168,11 +179,11 @@ class PlayerManager:
 
         try:
             if selected_player == 'VLC':
-                self._play_vlc(url, title, available_players['VLC'])
+                self._play_vlc(url, title, available_players['VLC'], headers)
             elif selected_player == 'MPV':
-                self._play_mpv(url, title, available_players['MPV'])
+                self._play_mpv(url, title, available_players['MPV'], headers)
             elif selected_player == 'MPC-HC':
-                self._play_mpc(url, title, available_players['MPC-HC'])
+                self._play_mpc(url, title, available_players['MPC-HC'], headers)
         except Exception as e:
             if self.console:
                 from rich.text import Text
@@ -182,10 +193,10 @@ class PlayerManager:
                 print(f"Error launching player: {str(e)}", file=sys.stderr)
                 input("Press Enter to continue...")
 
-    def _play_vlc(self, url: str, title: str, vlc_path: str = None):
+    def _play_vlc(self, url: str, title: str, vlc_path: str = None, headers: dict = None):
         if not vlc_path:
             vlc_path = self.get_available_players().get('VLC')
-        
+
         if not vlc_path:
             raise FileNotFoundError("VLC not found")
 
@@ -194,9 +205,11 @@ class PlayerManager:
             '--fullscreen',
             '--play-and-exit',
             '--meta-title', title,
-            url
         ]
-        
+        if headers and headers.get('Referer'):
+            vlc_args += ['--http-referrer=' + headers['Referer']]
+        vlc_args.append(url)
+
         subprocess.run(
             vlc_args,
             check=False,
@@ -204,41 +217,34 @@ class PlayerManager:
             stderr=subprocess.DEVNULL
         )
 
-    def _play_mpv(self, url: str, title: str, mpv_path: str = None):
+    def _play_mpv(self, url: str, title: str, mpv_path: str = None, headers: dict = None):
         if not mpv_path:
             mpv_path = self.get_available_players().get('MPV')
-        
+
         if not mpv_path or (mpv_path != 'mpv' and not os.path.exists(mpv_path)):
             raise FileNotFoundError(f"MPV not found at: {mpv_path}")
 
         mpv_args = [
             mpv_path,
             '--fullscreen',
-            '--fs-screen=0',
             '--keep-open=yes',
-            '--ontop',
             '--cache=yes',
-            '--cache-pause=yes',
-            '--cache-pause-initial=yes',
-            '--cache-pause-wait=3',
             '--demuxer-max-bytes=256M',
             '--demuxer-max-back-bytes=128M',
             '--cache-secs=30',
             '--hwdec=auto-safe',
-            '--vo=gpu',
-            '--profile=gpu-hq',
-            '--ytdl',
-            '--ytdl-format=bestvideo[height<=?1080]+bestaudio/best',
-            '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             '--sub-auto=fuzzy',
-            '--sub-file-paths=subs',
-            '--slang=ara,ar,eng,en',
-            '--alang=jpn,ja,eng,en',
-            '--title=' + title,
-            url
+            '--force-media-title=' + title,
+            '--force-window=yes',
         ]
-        
-        mpv_args.append('--force-window=yes')
+        if headers:
+            ua = headers.get('User-Agent')
+            if ua:
+                mpv_args += ['--user-agent=' + ua]
+            ref = headers.get('Referer')
+            if ref:
+                mpv_args += ['--referrer=' + ref]
+        mpv_args.append(url)
 
         result = subprocess.run(
             mpv_args,
@@ -247,20 +253,20 @@ class PlayerManager:
             stderr=subprocess.DEVNULL,
             stdin=subprocess.DEVNULL
         )
-        
+
         if result.returncode != 0:
             if self.console:
                 from rich.text import Text
                 self.console.print(Text(f"MPV exited with error code {result.returncode}", style="bold red"))
                 input("Press Enter to continue...")
 
-    def _play_mpc(self, url: str, title: str, mpc_path: str = None):
+    def _play_mpc(self, url: str, title: str, mpc_path: str = None, headers: dict = None):
         if not mpc_path:
             mpc_path = self.get_available_players().get('MPC-HC')
-            
+
         if not mpc_path:
             raise FileNotFoundError("MPC-HC not found")
-            
+
         mpc_args = [
             mpc_path,
             url,
@@ -268,7 +274,7 @@ class PlayerManager:
             '/play',
             '/close'
         ]
-        
+
         subprocess.run(
             mpc_args,
             check=False,

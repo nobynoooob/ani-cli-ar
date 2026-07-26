@@ -16,14 +16,18 @@ from rich.panel import Panel
 from rich.align import Align
 
 class AniCliWrapper:
-    def __init__(self, api, player, history, settings, rpc):
+    def __init__(self, api, player, history, settings, rpc, language_override=None):
         self.api = api
         self.player = player
         self.history = history
         self.settings_manager = settings
         self.rpc = rpc
+        self.language_override = language_override
         self.fzf_available = shutil.which('fzf') is not None
         self.console = Console()
+        
+    def _get_language(self):
+        return self.language_override or self.settings_manager.get('preferred_language', 'Arabic Sub')
         
     def get_theme_color(self, key="ascii"):
         t_name = self.settings_manager.get("theme")
@@ -119,7 +123,59 @@ class AniCliWrapper:
                 available.append(q)
         return available
 
+    def _fetch_english_stream(self, anime_title, episode_num, quality="1080p", dub=False):
+        from .scrapers.english import AllAnimeScraper
+        scraper = AllAnimeScraper()
+        mode = "dub" if dub else "sub"
+        try:
+            results = scraper.search(anime_title, mode)
+            if not results:
+                print(f"\033[1;33m[scraper] No results for '{anime_title}'\033[0m")
+                return None, {}
+            result = self._pick_best_anime_result(scraper, results, mode)
+            if result is None:
+                return None, {}
+            show_id = result["id"]
+            ep_num = int(float(episode_num))
+            return scraper.resolve_stream_url(show_id, ep_num, mode)
+        except Exception as e:
+            print(f"\033[1;31m[scraper] Error: {e}\033[0m", file=__import__('sys').stderr)
+            return None, {}
+
+    def _pick_best_anime_result(self, scraper, results, mode):
+        if len(results) == 1:
+            return results[0]
+        candidates = []
+        for r in results[:18]:
+            try:
+                eps = scraper.get_episodes(r["id"], mode)
+            except Exception:
+                eps = []
+            candidates.append((r, len(eps)))
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        if candidates and candidates[0][1] > 0:
+            return candidates[0][0]
+        return results[0]
+
     def play_video(self, anime, ep, quality_override=None):
+        language = self._get_language()
+
+        if language != 'Arabic Sub':
+            is_dub = (language == 'English Dub')
+            print(f"\033[1;34mFetching {language} stream for Episode {ep.number}...\033[0m")
+            url_and_headers = (None, {})
+            with self.console.status(f"[bold cyan]Fetching English stream...[/bold cyan]", spinner="bouncingBar"):
+                url_and_headers = self._fetch_english_stream(anime.title_en, ep.number, "best", is_dub)
+            if not url_and_headers or not url_and_headers[0]:
+                print("\033[1;31mFailed to get English stream URL.\033[0m")
+                return False
+            direct_url, stream_headers = url_and_headers
+            print(f"\033[1;34mPlaying episode {ep.number} ({language})...\033[0m")
+            self.player.play(direct_url, f"{anime.title_en} - Episode {ep.number}", headers=stream_headers)
+            self.history.mark_watched(anime.id, ep.display_num, anime.title_en)
+            self.history.save_history()
+            return True
+
         server_data = None
         
         with self.console.status(f"[bold blue]Fetching links for Episode {ep.number}...[/bold blue]", spinner="dots"):
@@ -358,7 +414,7 @@ class AniCliWrapper:
     def _print_header(self):
         ascii_color = self.get_theme_color("ascii")
         self.console.print(MINIMAL_ASCII_ART.strip(), style=ascii_color)
-        self.console.print(f"  {APP_VERSION} | gh:np4abdou1/ani-cli-arabic", style="dim")
+        self.console.print(f"  {APP_VERSION} | Made by The NoBy's", style="dim")
 
     def run(self, query=None):
         ascii_color = self.get_theme_color("ascii")
@@ -383,16 +439,11 @@ class AniCliWrapper:
                 else:
                     self.console.print() # Spacer if no RPC status
                 
-                if self.settings_manager.get('show_donation'):
-                    donation_markup = "   💖 [bold magenta dim]Support the project:[/bold magenta dim] [link=https://paypal.me/np4abdou][cyan underline dim]Donate via PayPal[/cyan underline dim][/link] ☕"
-                    self.console.print(Text.from_markup(donation_markup))
-                    self.console.print()
                 
                 # Show Menu / Prompt
                 margin = "   "
                 self.console.print(margin + "[cyan]T[/cyan]: Trending   [cyan]P[/cyan]: Popular", style="dim")
                 self.console.print(margin + "[cyan]G[/cyan]: Genres     [cyan]S[/cyan]: Studios", style="dim")
-                self.console.print(margin + "[cyan]D[/cyan]: 💖 Donate", style="dim")
                 self.console.print()
 
                 # Input
@@ -474,15 +525,7 @@ class AniCliWrapper:
                 self._print_header()
                 continue
                 
-            if cmd == 'd':
-                import webbrowser
-                webbrowser.open("https://paypal.me/np4abdou")
-                # Clear and redisplay
-                os.system('cls' if os.name == 'nt' else 'clear')
-                self._print_header()
-                continue
-
-            search_q = cmd
+                search_q = cmd
 
             results = []
             with self.console.status(f"[bold green]Searching for: {search_q}...[/bold green]", spinner="earth"):
@@ -517,7 +560,8 @@ class AniCliWrapper:
 
 def run_simple_cli(query=None, deps=None):
     if deps:
-        cli = AniCliWrapper(deps['api'], deps['player'], deps['history'], deps['settings'], deps['rpc'])
+        cli = AniCliWrapper(deps['api'], deps['player'], deps['history'], deps['settings'], deps['rpc'],
+                            language_override=deps.get('language_override'))
     else:
         # Fallback for old calls (should not happen with new app structure)
         from src.api import AnimeAPI

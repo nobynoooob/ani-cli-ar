@@ -39,6 +39,7 @@ class AniCliArApp:
         self.current_mode = "tui"
         self.force_cli = False
         self._cleaned_up = False
+        self._language_override = None
 
     def run(self):
         parser = argparse.ArgumentParser(
@@ -47,6 +48,8 @@ class AniCliArApp:
         )
         parser.add_argument('-i', '--interactive', action='store_true', help="Force minimal interactive CLI mode")
         parser.add_argument('-v', '--version', action='store_true', help="Show version information")
+        parser.add_argument('--sub', action='store_true', help="Override: use English Subtitled streams")
+        parser.add_argument('--dub', action='store_true', help="Override: use English Dubbed streams")
         parser.add_argument('query', nargs='*', help="Anime name to search for")
         
         args = parser.parse_args()
@@ -57,6 +60,12 @@ class AniCliArApp:
             sys.exit(0)
             
         self.force_cli = args.interactive
+
+        if args.sub:
+            self._language_override = 'English Sub'
+        elif args.dub:
+            self._language_override = 'English Dub'
+
         initial_query = " ".join(args.query) if args.query else None
 
         if not ensure_dependencies():
@@ -128,7 +137,8 @@ class AniCliArApp:
             'player': self.player,
             'history': self.history,
             'settings': self.settings,
-            'rpc': self.rpc
+            'rpc': self.rpc,
+            'language_override': self._language_override
         }
         return run_simple_cli(query, deps=deps)
 
@@ -154,6 +164,11 @@ class AniCliArApp:
             self.ui.print(Align.center(self.ui.get_header_renderable()))
             self.ui.print()
             
+            lang = self._get_language()
+            lang_colors = {"Arabic Sub": "green", "English Sub": "cyan", "English Dub": "yellow"}
+            lang_style = lang_colors.get(lang, "secondary")
+            self.ui.print(Align.center(Text.from_markup(f"Language: [bold {lang_style}]{lang}[/bold {lang_style}]", style="secondary")))
+
             if self.settings.get('discord_rpc'):
                 if hasattr(self, 'rpc_status'):
                     if self.rpc_status['status'] is True:
@@ -165,15 +180,10 @@ class AniCliArApp:
             else:
                 self.ui.print(Align.center(Text.from_markup("Discord Rich Presence [dim](disabled)[/dim]", style="dim")))
             
-            if self.settings.get('show_donation'):
-                self.ui.print()
-                donation_markup = "💖 [bold magenta dim]Support the project:[/bold magenta dim] [link=https://paypal.me/np4abdou][cyan underline dim]Click here to donate via PayPal[/cyan underline dim][/link] ☕"
-                self.ui.print(Align.center(Text.from_markup(donation_markup)))
-                
             self.ui.print()
 
             keybinds_panel = Panel(
-                Text("T: Trending | P: Popular | G: Genres | S: Studios | D: 💖 Donate | L: History | F: Favorites | C: Settings | Q: Quit", style="info", justify="center"),
+                Text("T: Trending | P: Popular | G: Genres | S: Studios | L: History | F: Favorites | C: Settings | Q: Quit", style="info", justify="center"),
                 box=HEAVY,
                 border_style=COLOR_BORDER
             )
@@ -231,11 +241,6 @@ class AniCliArApp:
             elif query == 's':
                 self.rpc.update_studios()
                 self.handle_studios()
-                continue
-            elif query == 'd':
-                import webbrowser
-                webbrowser.open("https://paypal.me/np4abdou")
-                # Redraw
                 continue
             elif query == 'l':
                 self.rpc.update_history()
@@ -612,24 +617,30 @@ class AniCliArApp:
             
             while True:
                 selected_ep = episodes[current_idx]
-                
-                server_data = self.ui.run_with_loading(
-                    "Loading servers...",
-                    self.api.get_streaming_servers,
-                    selected_anime.id, 
-                    selected_ep.number,
-                    selected_anime.type
-                )
-                
-                if not server_data:
-                    self.ui.render_message(
-                        "✗ No Servers", 
-                        "No servers available for this episode.",
-                        "error"
+
+                language = self._get_language()
+
+                if language == 'Arabic Sub':
+                    server_data = self.ui.run_with_loading(
+                        "Loading servers...",
+                        self.api.get_streaming_servers,
+                        selected_anime.id,
+                        selected_ep.number,
+                        selected_anime.type
                     )
-                    break
-                
-                action_taken = self.handle_quality_selection(selected_anime, selected_ep, server_data)
+
+                    if not server_data:
+                        self.ui.render_message(
+                            "✗ No Servers",
+                            "No servers available for this episode.",
+                            "error"
+                        )
+                        break
+
+                    action_taken = self.handle_quality_selection(selected_anime, selected_ep, server_data)
+                else:
+                    is_dub = (language == 'English Dub')
+                    action_taken = self.handle_english_stream(selected_anime, selected_ep, dub=is_dub)
                 
                 if action_taken == "watch":
                     auto_next = self.settings.get('auto_next')
@@ -676,9 +687,46 @@ class AniCliArApp:
     def _get_download_directory(self):
         return self.settings.get('download_directory') or "downloads"
 
+    def _get_language(self):
+        return self._language_override or self.settings.get('preferred_language', 'Arabic Sub')
+
     def _extract_quality_tag(self, quality_name):
         quality_match = re.search(r"\b(\d{3,4}p)\b", quality_name or "")
         return quality_match.group(1) if quality_match else (quality_name or "auto")
+
+    def _fetch_english_stream(self, anime_title, episode_num, quality="1080p", dub=False):
+        from .scrapers.english import AllAnimeScraper
+        scraper = AllAnimeScraper()
+        mode = "dub" if dub else "sub"
+        try:
+            results = scraper.search(anime_title, mode)
+            if not results:
+                return None, {}
+            result = self._pick_best_anime_result(scraper, results, mode)
+            if result is None:
+                return None, {}
+            show_id = result["id"]
+            ep_num = int(float(episode_num))
+            direct_url, headers = scraper.resolve_stream_url(show_id, ep_num, mode)
+            return direct_url, headers
+        except Exception as e:
+            print(f"[scraper] Error: {e}", file=__import__('sys').stderr)
+            return None, {}
+
+    def _pick_best_anime_result(self, scraper, results, mode):
+        if len(results) == 1:
+            return results[0]
+        candidates = []
+        for r in results[:18]:
+            try:
+                eps = scraper.get_episodes(r["id"], mode)
+            except Exception:
+                eps = []
+            candidates.append((r, len(eps)))
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        if candidates and candidates[0][1] > 0:
+            return candidates[0][0]
+        return results[0]
 
     def _pick_default_download_quality_option(self, current_ep_data):
         qualities = [
@@ -912,6 +960,87 @@ class AniCliArApp:
                 "error"
             )
             return None
+
+    def handle_english_stream(self, selected_anime, selected_ep, dub=False):
+        from rich.text import Text
+        from rich.panel import Panel
+        from rich.align import Align
+        from rich.box import HEAVY
+        from .config import COLOR_BORDER, COLOR_TITLE
+
+        qualities = [
+            QualityOption("FHD • 1080p (Full HD)", '1080p', "info"),
+            QualityOption("HD • 720p (Standard Quality)", '720p', "info"),
+            QualityOption("SD • 480p (Low Quality)", '480p', "info"),
+        ]
+
+        result = self.ui.quality_selection_menu(
+            selected_anime.title_en,
+            selected_ep.display_num,
+            qualities,
+            self.rpc,
+            selected_anime.thumbnail
+        )
+
+        if result == -1:
+            sys.exit(0)
+        if result is None:
+            return None
+
+        idx, action = result
+        quality = qualities[idx]
+        quality_name = quality.server_key
+
+        if action == 'download':
+            self.ui.render_message("Info", "Download not supported for English streams.", "info")
+            return None
+
+        url_and_headers = self.ui.run_with_loading(
+            "Fetching English stream...",
+            self._fetch_english_stream,
+            selected_anime.title_en,
+            selected_ep.display_num,
+            "best",
+            dub
+        )
+
+        if not url_and_headers or not url_and_headers[0]:
+            self.ui.render_message("Error", "Failed to get English stream URL.", "error")
+            return None
+
+        direct_url, stream_headers = url_and_headers
+        player_type = self.settings.get('player')
+        suffix = " [English Dub]" if dub else " [English Sub]"
+
+        watching_text = Text()
+        watching_text.append("▶ ", style=COLOR_TITLE + " blink")
+        watching_text.append(selected_anime.title_en, style="bold")
+        watching_text.append(suffix, style="bold green" if dub else "bold cyan")
+        watching_text.append("\nEpisode ", style="secondary")
+        watching_text.append(str(selected_ep.display_num), style=COLOR_TITLE + " bold")
+        watching_text.append(" ◀", style=COLOR_TITLE + " blink")
+        watching_text.append(f"\n\n{quality.name}", style="dim")
+
+        watching_panel = Panel(
+            Align.center(watching_text, vertical="middle"),
+            title=Text("NOW PLAYING", style=COLOR_TITLE + " bold"),
+            box=HEAVY,
+            border_style=COLOR_BORDER,
+            padding=(2, 4),
+            width=60
+        )
+
+        self.ui.clear()
+        self.ui.console.print(Align.center(watching_panel, vertical="middle", height=self.ui.console.height))
+
+        self.rpc.update_watching(selected_anime.title_en, str(selected_ep.display_num), selected_anime.thumbnail)
+        monitor.track_video_play(selected_anime.title_en, str(selected_ep.display_num))
+
+        self.player.play(direct_url, f"{selected_anime.title_en} - Ep {selected_ep.display_num}", player_type=player_type, headers=stream_headers)
+        self.ui.clear()
+        self.history.mark_watched(selected_anime.id, selected_ep.display_num, selected_anime.title_en)
+        self.rpc.update_selecting_episode(selected_anime.title_en, selected_anime.thumbnail)
+        return "watch"
 
     def handle_exit(self):
         self.ui.clear()

@@ -16,7 +16,7 @@ DEFAULT_HEADER_ART = f"""
   ███    ███ ███   ███ ███       ███    ███ ███▌    ▄ ███         ███    ███   ███    ███
   ███    █▀   ▀█   █▀  █▀        ████████▀  █████▄▄██ █▀          ███    █▀    ███    ███
                                             ▀                                  ███    ███
-                         {APP_VERSION} - Made by @np4abdou1/ani-cli-arabic
+                          {APP_VERSION} - Made by The NoBy's
 """
 
 MINIMAL_ASCII_ART = r"""
