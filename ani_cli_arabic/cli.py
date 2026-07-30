@@ -123,58 +123,63 @@ class AniCliWrapper:
                 available.append(q)
         return available
 
-    def _fetch_english_stream(self, anime_title, episode_num, quality="1080p", dub=False):
-        from .scrapers.english import AllAnimeScraper
-        scraper = AllAnimeScraper()
-        mode = "dub" if dub else "sub"
-        try:
-            results = scraper.search(anime_title, mode)
-            if not results:
-                print(f"\033[1;33m[scraper] No results for '{anime_title}'\033[0m")
-                return None, {}
-            result = self._pick_best_anime_result(scraper, results, mode)
-            if result is None:
-                return None, {}
-            show_id = result["id"]
-            ep_num = int(float(episode_num))
-            return scraper.resolve_stream_url(show_id, ep_num, mode)
-        except Exception as e:
-            print(f"\033[1;31m[scraper] Error: {e}\033[0m", file=__import__('sys').stderr)
-            return None, {}
+    def _fetch_english_stream(self, anime_title, episode_num, quality="1080p", dub=False, provider="auto"):
+        import asyncio
+        from .scrapers import ProviderManager
+        preferred = self.settings_manager.get('preferred_provider', '')
+        pm = ProviderManager(preferred_provider=preferred if preferred else None)
 
-    def _pick_best_anime_result(self, scraper, results, mode):
-        if len(results) == 1:
-            return results[0]
-        candidates = []
-        for r in results[:18]:
-            try:
-                eps = scraper.get_episodes(r["id"], mode)
-            except Exception:
-                eps = []
-            candidates.append((r, len(eps)))
-        candidates.sort(key=lambda x: x[1], reverse=True)
-        if candidates and candidates[0][1] > 0:
-            return candidates[0][0]
-        return results[0]
+        url, headers, _ = asyncio.run(
+            pm.resolve_stream(anime_title, episode_num, language="english", provider=provider)
+        )
+        return url, headers
 
     def play_video(self, anime, ep, quality_override=None):
         language = self._get_language()
 
         if language != 'Arabic Sub':
             is_dub = (language == 'English Dub')
-            print(f"\033[1;34mFetching {language} stream for Episode {ep.number}...\033[0m")
-            url_and_headers = (None, {})
-            with self.console.status(f"[bold cyan]Fetching English stream...[/bold cyan]", spinner="bouncingBar"):
-                url_and_headers = self._fetch_english_stream(anime.title_en, ep.number, "best", is_dub)
-            if not url_and_headers or not url_and_headers[0]:
-                print("\033[1;31mFailed to get English stream URL.\033[0m")
+            from .scrapers.provider_manager import get_provider_list
+            providers = get_provider_list("english")
+            print(f"\033[1;36mSelect server for {anime.title_en} - Episode {ep.number}:\033[0m")
+            print("  [0] Auto-Test")
+            for i, p in enumerate(providers, 1):
+                print(f"  [{i}] {p.capitalize()}")
+            try:
+                sel = input("\nEnter number (0-4): ").strip()
+            except (KeyboardInterrupt, EOFError):
                 return False
-            direct_url, stream_headers = url_and_headers
-            print(f"\033[1;34mPlaying episode {ep.number} ({language})...\033[0m")
-            self.player.play(direct_url, f"{anime.title_en} - Episode {ep.number}", headers=stream_headers)
-            self.history.mark_watched(anime.id, ep.display_num, anime.title_en)
-            self.history.save_history()
-            return True
+            provider_choice = "auto"
+            if sel.isdigit():
+                idx = int(sel)
+                if 1 <= idx <= len(providers):
+                    provider_choice = providers[idx - 1]
+
+            attempt_auto = False
+            while True:
+                label = "Auto-Test" if provider_choice == "auto" else provider_choice.capitalize()
+                print(f"\033[1;34mFetching {language} stream via {label}...\033[0m")
+                url_and_headers = (None, {})
+                with self.console.status(f"[bold cyan]Fetching English stream...[/bold cyan]", spinner="bouncingBar"):
+                    url_and_headers = self._fetch_english_stream(anime.title_en, ep.number, "best", is_dub, provider=provider_choice)
+                if url_and_headers and url_and_headers[0]:
+                    direct_url, stream_headers = url_and_headers
+                    print(f"\033[1;34mPlaying episode {ep.number} ({language})...\033[0m")
+                    self.player.play(direct_url, f"{anime.title_en} - Episode {ep.number}", headers=stream_headers)
+                    self.history.mark_watched(anime.id, ep.display_num, anime.title_en)
+                    self.history.save_history()
+                    return True
+                print(f"\033[1;31m{label} failed.\033[0m")
+                if provider_choice != "auto" and not attempt_auto:
+                    try:
+                        ans = input("Selected server failed. Would you like to switch to Auto-Test mode? [Y/n]: ").strip().lower()
+                    except (KeyboardInterrupt, EOFError):
+                        return False
+                    if ans in ("", "y", "yes"):
+                        provider_choice = "auto"
+                        attempt_auto = True
+                        continue
+                return False
 
         server_data = None
         
@@ -596,3 +601,21 @@ def run_simple_cli(query=None, deps=None):
             # Print goodbye art with system accent color (cyan) like ani-cli
             print(f"\033[1;36m{GOODBYE_ART.strip()}\033[0m")
             sys.exit(exit_code)
+
+
+def main():
+    """Entry point for running the CLI directly: python -m ani_cli_arabic.cli"""
+    from ani_cli_arabic.api import AnimeAPI
+    from ani_cli_arabic.player import PlayerManager
+    from ani_cli_arabic.history import HistoryManager
+    from ani_cli_arabic.settings import SettingsManager
+    from ani_cli_arabic.discord_rpc import DiscordRPCManager
+    cli = AniCliWrapper(
+        AnimeAPI(), PlayerManager(console=None),
+        HistoryManager(), SettingsManager(), DiscordRPCManager(),
+    )
+    cli.run()
+
+
+if __name__ == "__main__":
+    main()

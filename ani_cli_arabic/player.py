@@ -111,8 +111,19 @@ class PlayerManager:
         return players
 
     def play(self, url: str, title: str, player_type: str = 'ask', headers: Optional[dict] = None):
-        if not url or not (url.startswith("http://") or url.startswith("https://") or url.startswith("rtmp://")):
+        if not url:
             msg = "Error: Extracted stream URL is invalid or empty."
+            if self.console:
+                from rich.text import Text
+                self.console.print(Text(msg, style="bold red"))
+            else:
+                print(msg, file=sys.stderr)
+            return
+
+        url = url.strip().strip('"').strip("'")
+
+        if not (url.startswith("http://") or url.startswith("https://") or url.startswith("rtmp://")):
+            msg = f"Error: Stream URL does not start with http/https/rtmp: {url[:100]}"
             if self.console:
                 from rich.text import Text
                 self.console.print(Text(msg, style="bold red"))
@@ -198,6 +209,11 @@ class PlayerManager:
         if not vlc_path:
             raise FileNotFoundError("VLC not found")
 
+        if not url or not url.strip():
+            raise ValueError("No playable stream URL found")
+
+        url = url.strip().strip('"').strip("'")
+
         vlc_args = [
             vlc_path,
             '--fullscreen',
@@ -208,12 +224,31 @@ class PlayerManager:
             vlc_args += ['--http-referrer=' + headers['Referer']]
         vlc_args.append(url)
 
-        subprocess.run(
+        if self.console:
+            from rich.text import Text
+            self.console.print(Text(f"[DEBUG] Launching VLC with stream URL: {url}", style="dim"))
+        else:
+            sys.stderr.write(f"[DEBUG] Launching VLC with stream URL: {url}\n")
+
+        result = subprocess.run(
             vlc_args,
             check=False,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
+            stderr=subprocess.PIPE,
         )
+
+        if result.returncode != 0:
+            err_msg = result.stderr.decode("utf-8", errors="replace") if result.stderr else ""
+            detail = f"VLC exited with error code {result.returncode}"
+            if err_msg:
+                detail += f"\nVLC stderr:\n{err_msg[:2000]}"
+            if self.console:
+                from rich.text import Text
+                self.console.print(Text(detail, style="bold red"))
+                input("Press Enter to continue...")
+            else:
+                print(detail, file=sys.stderr)
+                input("Press Enter to continue...")
 
     def _play_mpv(self, url: str, title: str, mpv_path: str = None, headers: dict = None):
         if not mpv_path:
@@ -221,6 +256,11 @@ class PlayerManager:
 
         if not mpv_path or (mpv_path != 'mpv' and not os.path.exists(mpv_path)):
             raise FileNotFoundError(f"MPV not found at: {mpv_path}")
+
+        if not url or not url.strip():
+            raise ValueError("No playable stream URL found")
+
+        url = url.strip().strip('"').strip("'")
 
         mpv_args = [
             mpv_path,
@@ -236,26 +276,39 @@ class PlayerManager:
             '--force-window=yes',
         ]
         if headers:
+            ref = headers.get('Referer')
+            if ref:
+                mpv_args += ['--http-header-fields=Referer: ' + ref]
             ua = headers.get('User-Agent')
             if ua:
                 mpv_args += ['--user-agent=' + ua]
-            ref = headers.get('Referer')
-            if ref:
-                mpv_args += ['--referrer=' + ref]
         mpv_args.append(url)
+
+        if self.console:
+            from rich.text import Text
+            self.console.print(Text(f"[DEBUG] Launching MPV with stream URL: {url}", style="dim"))
+        else:
+            sys.stderr.write(f"[DEBUG] Launching MPV with stream URL: {url}\n")
 
         result = subprocess.run(
             mpv_args,
             check=False,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
         )
 
         if result.returncode != 0:
+            err_msg = result.stderr.decode("utf-8", errors="replace") if result.stderr else ""
+            detail = f"MPV exited with error code {result.returncode}"
+            if err_msg:
+                detail += f"\nMPV stderr:\n{err_msg[:2000]}"
             if self.console:
                 from rich.text import Text
-                self.console.print(Text(f"MPV exited with error code {result.returncode}", style="bold red"))
+                self.console.print(Text(detail, style="bold red"))
+                input("Press Enter to continue...")
+            else:
+                print(detail, file=sys.stderr)
                 input("Press Enter to continue...")
 
     def _play_mpc(self, url: str, title: str, mpc_path: str = None, headers: dict = None):

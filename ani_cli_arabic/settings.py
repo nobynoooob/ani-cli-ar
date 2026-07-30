@@ -24,7 +24,8 @@ class SettingsManager:
             "discord_rpc": True,
             "theme": "blue",
             "analytics": True,
-            "preferred_language": "Arabic Sub"
+            "preferred_language": "Arabic Sub",
+            "preferred_provider": ""
         }
         
         if not self.config_file.exists():

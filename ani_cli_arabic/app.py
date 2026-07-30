@@ -21,7 +21,6 @@ from .settings import SettingsManager
 from .favorites import FavoritesManager
 from .updater import check_for_updates, get_version_status
 from .deps import ensure_dependencies
-from .cli import run_simple_cli
 from .config import GOODBYE_ART
 import shutil
 import argparse
@@ -50,6 +49,11 @@ class AniCliArApp:
         parser.add_argument('-v', '--version', action='store_true', help="Show version information")
         parser.add_argument('--sub', action='store_true', help="Override: use English Subtitled streams")
         parser.add_argument('--dub', action='store_true', help="Override: use English Dubbed streams")
+        parser.add_argument('--provider', type=str, default=None, choices=['mkissa', 'gogoanime'],
+                            help="Preferred English stream provider (overrides auto-fallback; 'miruro' and 'api' also available but not listed as choices)")
+        # KNOWN: 'miruro' and 'api' providers are registered in ProviderManager
+        # but not in argparse choices. Use get_provider_list('english') for runtime.
+        
         parser.add_argument('query', nargs='*', help="Anime name to search for")
         
         args = parser.parse_args()
@@ -67,6 +71,9 @@ class AniCliArApp:
         elif args.dub:
             self._language_override = 'English Dub'
             self.settings.set('preferred_language', 'English Dub')
+
+        if args.provider:
+            self.settings.set('preferred_provider', args.provider)
 
         initial_query = " ".join(args.query) if args.query else None
 
@@ -142,6 +149,7 @@ class AniCliArApp:
             'rpc': self.rpc,
             'language_override': self._language_override
         }
+        from .cli import run_simple_cli
         return run_simple_cli(query, deps=deps)
 
     def run_tui_mode(self, query=None):
@@ -696,39 +704,16 @@ class AniCliArApp:
         quality_match = re.search(r"\b(\d{3,4}p)\b", quality_name or "")
         return quality_match.group(1) if quality_match else (quality_name or "auto")
 
-    def _fetch_english_stream(self, anime_title, episode_num, quality="1080p", dub=False):
-        from .scrapers.english import AllAnimeScraper
-        scraper = AllAnimeScraper()
-        mode = "dub" if dub else "sub"
-        try:
-            results = scraper.search(anime_title, mode)
-            if not results:
-                return None, {}
-            result = self._pick_best_anime_result(scraper, results, mode)
-            if result is None:
-                return None, {}
-            show_id = result["id"]
-            ep_num = int(float(episode_num))
-            direct_url, headers = scraper.resolve_stream_url(show_id, ep_num, mode)
-            return direct_url, headers
-        except Exception as e:
-            print(f"[scraper] Error: {e}", file=__import__('sys').stderr)
-            return None, {}
+    def _fetch_english_stream(self, anime_title, episode_num, quality="1080p", dub=False, provider="auto"):
+        import asyncio
+        from .scrapers import ProviderManager
+        preferred = self.settings.get('preferred_provider', '')
+        pm = ProviderManager(preferred_provider=preferred if preferred else None)
 
-    def _pick_best_anime_result(self, scraper, results, mode):
-        if len(results) == 1:
-            return results[0]
-        candidates = []
-        for r in results[:18]:
-            try:
-                eps = scraper.get_episodes(r["id"], mode)
-            except Exception:
-                eps = []
-            candidates.append((r, len(eps)))
-        candidates.sort(key=lambda x: x[1], reverse=True)
-        if candidates and candidates[0][1] > 0:
-            return candidates[0][0]
-        return results[0]
+        url, headers, _ = asyncio.run(
+            pm.resolve_stream(anime_title, episode_num, language="english", provider=provider)
+        )
+        return url, headers
 
     def _pick_default_download_quality_option(self, current_ep_data):
         qualities = [
@@ -997,17 +982,44 @@ class AniCliArApp:
             self.ui.render_message("Info", "Download not supported for English streams.", "info")
             return None
 
-        url_and_headers = self.ui.run_with_loading(
-            "Fetching English stream...",
-            self._fetch_english_stream,
-            selected_anime.title_en,
-            selected_ep.display_num,
-            "best",
-            dub
-        )
+        from .scrapers.provider_manager import get_provider_list
+        providers = get_provider_list("english")
+        server_items = ["Auto-Test"] + [p.capitalize() for p in providers]
+        server_choice = self.ui.selection_menu(server_items, title="Select Server")
+        if server_choice is None:
+            return None
+        provider_choice = "auto" if server_choice == "Auto-Test" else providers[server_items.index(server_choice) - 1]
 
-        if not url_and_headers or not url_and_headers[0]:
-            self.ui.render_message("Error", "Failed to get English stream URL.", "error")
+        attempt_auto = False
+        while True:
+            label = "Auto-Test" if provider_choice == "auto" else provider_choice.capitalize()
+            url_and_headers = self.ui.run_with_loading(
+                f"Fetching English stream via {label}...",
+                self._fetch_english_stream,
+                selected_anime.title_en,
+                selected_ep.display_num,
+                "best",
+                dub,
+                provider_choice,
+            )
+
+            if url_and_headers and url_and_headers[0]:
+                break
+
+            self.ui.render_message("Error", f"{label} failed.", "error")
+            if provider_choice != "auto" and not attempt_auto:
+                self.ui.render_message(
+                    "Info",
+                    "Selected server failed. Would you like to switch to Auto-Test mode?",
+                    "info",
+                )
+                from .ui import get_key
+                self.ui.print("\nPress 'y' for Auto-Test or any other key to cancel: ", end="")
+                key = get_key()
+                if key and key.lower() == 'y':
+                    provider_choice = "auto"
+                    attempt_auto = True
+                    continue
             return None
 
         direct_url, stream_headers = url_and_headers
