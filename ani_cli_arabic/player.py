@@ -145,46 +145,53 @@ class PlayerManager:
             return
 
         player_names = list(available_players.keys())
+        preferred = (player_type or 'ask').strip().lower()
         selected_player = None
 
-        if len(player_names) == 1:
-            selected_player = player_names[0]
-        else:
-            if self.console:
-                from rich.prompt import Prompt
-                from rich.panel import Panel
-                from rich.text import Text
-                from rich.align import Align
-                
-                options_text = "\n".join([f"[{i+1}] {name}" for i, name in enumerate(player_names)])
-                panel = Panel(options_text, title=Text("Select Video Player", style="bold cyan"), border_style="cyan", padding=(1, 4))
-                self.console.print()
-                self.console.print(Align.center(panel))
-                
-                choice = Prompt.ask(
-                    "Enter the number of the player", 
-                    choices=[str(i+1) for i in range(len(player_names))], 
-                    default="1", 
-                    console=self.console
-                )
-                selected_player = player_names[int(choice)-1]
+        if preferred == 'mpv' and 'MPV' in available_players:
+            selected_player = 'MPV'
+        elif preferred == 'vlc' and 'VLC' in available_players:
+            selected_player = 'VLC'
+
+        if selected_player is None:
+            if len(player_names) == 1:
+                selected_player = player_names[0]
             else:
-                print("\nAvailable Video Players:")
-                for i, name in enumerate(player_names):
-                    print(f"{i+1}. {name}")
-                
-                while True:
-                    try:
-                        choice = input(f"Choose a video player (1-{len(player_names)}) [1]: ")
-                        if not choice.strip():
-                            choice = "1"
-                        choice_idx = int(choice) - 1
-                        if 0 <= choice_idx < len(player_names):
-                            selected_player = player_names[choice_idx]
-                            break
-                        print("Invalid choice.")
-                    except ValueError:
-                        print("Invalid input.")
+                if self.console:
+                    from rich.prompt import Prompt
+                    from rich.panel import Panel
+                    from rich.text import Text
+                    from rich.align import Align
+
+                    options_text = "\n".join([f"[{i+1}] {name}" for i, name in enumerate(player_names)])
+                    panel = Panel(options_text, title=Text("Select Video Player", style="bold cyan"), border_style="cyan", padding=(1, 4))
+                    self.console.print()
+                    self.console.print(Align.center(panel))
+
+                    choice = Prompt.ask(
+                        "Enter the number of the player", 
+                        choices=[str(i+1) for i in range(len(player_names))], 
+                        default="1", 
+                        console=self.console
+                    )
+                    selected_player = player_names[int(choice)-1]
+                else:
+                    print("\nAvailable Video Players:")
+                    for i, name in enumerate(player_names):
+                        print(f"{i+1}. {name}")
+
+                    while True:
+                        try:
+                            choice = input(f"Choose a video player (1-{len(player_names)}) [1]: ")
+                            if not choice.strip():
+                                choice = "1"
+                            choice_idx = int(choice) - 1
+                            if 0 <= choice_idx < len(player_names):
+                                selected_player = player_names[choice_idx]
+                                break
+                            print("Invalid choice.")
+                        except ValueError:
+                            print("Invalid input.")
 
         try:
             if selected_player == 'VLC':
@@ -267,9 +274,9 @@ class PlayerManager:
             '--fullscreen',
             '--keep-open=yes',
             '--cache=yes',
-            '--demuxer-max-bytes=256M',
-            '--demuxer-max-back-bytes=128M',
-            '--cache-secs=30',
+            '--demuxer-max-bytes=150M',
+            '--demuxer-max-back-bytes=64M',
+            '--demuxer-readahead-secs=20',
             '--hwdec=auto-safe',
             '--sub-auto=fuzzy',
             '--force-media-title=' + title,

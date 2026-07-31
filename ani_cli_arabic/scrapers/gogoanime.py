@@ -14,6 +14,12 @@ USER_AGENT = (
     "Chrome/126.0.0.0 Safari/537.36"
 )
 
+_CLIENT = httpx.Client(
+    headers={"User-Agent": USER_AGENT, "Referer": BASE_URL + "/"},
+    timeout=httpx.Timeout(8.0, connect=5.0),
+    follow_redirects=True,
+)
+
 
 def _title_to_slug(title: str) -> str:
     slug = title.lower().strip()
@@ -110,17 +116,10 @@ class GogoAnimeScraper(BaseScraper):
     def name(self) -> str:
         return "gogoanime"
 
-    def __init__(self):
-        self._client = httpx.Client(
-            headers={"User-Agent": USER_AGENT, "Referer": BASE_URL + "/"},
-            timeout=httpx.Timeout(8.0, connect=5.0),
-            follow_redirects=True,
-        )
-
     def search(self, query: str) -> List[Dict]:
         slug = _title_to_slug(query)
         try:
-            resp = self._client.get(f"{BASE_URL}/category/{slug}")
+            resp = _CLIENT.get(f"{BASE_URL}/category/{slug}")
             if resp.status_code != 200 or len(resp.text) < 1000:
                 return []
         except Exception:
@@ -141,7 +140,7 @@ class GogoAnimeScraper(BaseScraper):
 
     def get_episodes(self, anime_id: str) -> List[Dict]:
         try:
-            resp = self._client.get(f"{BASE_URL}/category/{anime_id}")
+            resp = _CLIENT.get(f"{BASE_URL}/category/{anime_id}")
         except Exception:
             return []
         nums = sorted(set(
@@ -159,7 +158,7 @@ class GogoAnimeScraper(BaseScraper):
         url = f"{BASE_URL}/{show_id}-episode-{ep_str}-english-subbed/"
 
         try:
-            resp = self._client.get(url)
+            resp = _CLIENT.get(url)
             if resp.status_code != 200:
                 return {"stream_url": None, "headers": {}}
         except Exception:

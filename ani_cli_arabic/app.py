@@ -1017,44 +1017,26 @@ class AniCliArApp:
             self.ui.render_message("Info", "Download not supported for English streams.", "info")
             return None
 
-        from .scrapers.provider_manager import get_provider_list
-        providers = get_provider_list("english")
-        server_items = ["Auto-Test"] + [p.capitalize() for p in providers]
-        server_choice = self.ui.selection_menu(server_items, title="Select Server")
-        if server_choice is None:
-            return None
-        provider_choice = "auto" if server_choice == "Auto-Test" else providers[server_items.index(server_choice) - 1]
+        preferred = self.settings.get('preferred_provider', '') or "auto"
+        provider_choice = preferred.lower()
+        label = "Auto-Test" if provider_choice == "auto" else provider_choice.capitalize()
 
-        attempt_auto = False
-        while True:
-            label = "Auto-Test" if provider_choice == "auto" else provider_choice.capitalize()
-            url_and_headers = self.ui.run_with_loading(
-                f"Fetching English stream via {label}...",
-                self._fetch_english_stream,
-                selected_anime.title_en,
-                selected_ep.display_num,
-                "best",
-                dub,
-                provider_choice,
+        url_and_headers = self.ui.run_with_loading(
+            f"Fetching English stream via {label}...",
+            self._fetch_english_stream,
+            selected_anime.title_en,
+            selected_ep.display_num,
+            "best",
+            dub,
+            provider_choice,
+        )
+
+        if not (url_and_headers and url_and_headers[0]):
+            self.ui.render_message(
+                "Error",
+                f"No working English stream found via {label}. Please try another provider.",
+                "error",
             )
-
-            if url_and_headers and url_and_headers[0]:
-                break
-
-            self.ui.render_message("Error", f"{label} failed.", "error")
-            if provider_choice != "auto" and not attempt_auto:
-                self.ui.render_message(
-                    "Info",
-                    "Selected server failed. Would you like to switch to Auto-Test mode?",
-                    "info",
-                )
-                from .ui import get_key
-                self.ui.print("\nPress 'y' for Auto-Test or any other key to cancel: ", end="")
-                key = get_key()
-                if key and key.lower() == 'y':
-                    provider_choice = "auto"
-                    attempt_auto = True
-                    continue
             return None
 
         direct_url, stream_headers = url_and_headers

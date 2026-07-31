@@ -24,19 +24,23 @@ _PROVIDERS = ["gogoanime", "aniwatch", "zoro"]
 
 _TIMEOUT = httpx.Timeout(8.0, connect=5.0)
 
+_CLIENT = httpx.Client(
+    headers={"User-Agent": USER_AGENT},
+    timeout=_TIMEOUT,
+    follow_redirects=True,
+)
+
 
 class ApiScraper(BaseScraper):
+
+    _cached_base = ""
+    _cached_prov = ""
 
     @property
     def name(self) -> str:
         return "api"
 
     def __init__(self):
-        self._client = httpx.Client(
-            headers={"User-Agent": USER_AGENT},
-            timeout=_TIMEOUT,
-            follow_redirects=True,
-        )
         self._base_url, self._active_prov = self._resolve()
 
     @staticmethod
@@ -47,17 +51,31 @@ class ApiScraper(BaseScraper):
 
     def _discover(self) -> bool:
         if self._base_url:
-            return bool(self._active_prov) or self._test_base(self._base_url)
+            if self.__class__._cached_base:
+                self._base_url = self.__class__._cached_base
+                self._active_prov = self.__class__._cached_prov
+                return True
+            if self._test_base(self._base_url):
+                self.__class__._cached_base = self._base_url
+                self.__class__._cached_prov = self._active_prov
+                return True
+            return False
+        if self.__class__._cached_base:
+            self._base_url = self.__class__._cached_base
+            self._active_prov = self.__class__._cached_prov
+            return True
         for base in _API_BASES:
             if self._test_base(base):
                 self._base_url = base
+                self.__class__._cached_base = base
+                self.__class__._cached_prov = self._active_prov
                 return True
         return False
 
     def _test_base(self, base: str) -> bool:
         for prov in _PROVIDERS:
             try:
-                r = self._client.get(f"{base}/anime/{prov}/naruto", timeout=5.0)
+                r = _CLIENT.get(f"{base}/anime/{prov}/naruto", timeout=5.0)
                 if r.status_code == 200:
                     self._active_prov = prov
                     return True
@@ -69,7 +87,7 @@ class ApiScraper(BaseScraper):
         if not self._discover():
             return []
         try:
-            r = self._client.get(
+            r = _CLIENT.get(
                 f"{self._base_url}/anime/{self._active_prov}/{query}",
                 params={"page": 1},
             )
@@ -88,7 +106,7 @@ class ApiScraper(BaseScraper):
         if not self._discover():
             return []
         try:
-            r = self._client.get(
+            r = _CLIENT.get(
                 f"{self._base_url}/anime/{self._active_prov}/info/{anime_id}"
             )
             if r.status_code != 200:
@@ -106,7 +124,7 @@ class ApiScraper(BaseScraper):
         if not self._discover():
             return {"stream_url": None, "headers": {}}
         try:
-            r = self._client.get(
+            r = _CLIENT.get(
                 f"{self._base_url}/anime/{self._active_prov}/watch/{episode_id}"
             )
             if r.status_code != 200:

@@ -49,12 +49,16 @@ class ProviderManager:
         self, language: str, provider: Optional[str] = None,
     ):
         provider_clean = (provider or "auto").lower()
-        if provider_clean and provider_clean != "auto":
+        order = _PROVIDER_ORDER.get(language, ENGLISH_PROVIDERS)
+
+        if provider_clean != "auto":
             if provider_clean in self._providers:
                 yield provider_clean, self._providers[provider_clean]
+            for name in order:
+                if name != provider_clean and name in self._providers:
+                    yield name, self._providers[name]
             return
 
-        order = _PROVIDER_ORDER.get(language, ENGLISH_PROVIDERS)
         if self._preferred and self._preferred in self._providers:
             yield self._preferred, self._providers[self._preferred]
         for name in order:

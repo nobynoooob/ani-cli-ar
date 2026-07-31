@@ -19,7 +19,7 @@ class SettingsManager:
             "default_download_quality": "1080p",
             "download_mode": "internal",
             "download_directory": "downloads",
-            "player": "mpv",
+            "player": "ask",
             "auto_next": False,
             "discord_rpc": True,
             "theme": "blue",

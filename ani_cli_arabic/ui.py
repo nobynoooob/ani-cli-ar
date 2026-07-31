@@ -1129,13 +1129,15 @@ class UIManager:
                         return None
 
     def settings_menu(self, settings_mgr):
+        from .scrapers.provider_manager import get_provider_list
         options = [
             ("Preferred Language", ["Arabic Sub", "English Sub", "English Dub"], "preferred_language"),
+            ("Preferred Server/Provider", ["auto"] + get_provider_list("english"), "preferred_provider"),
             ("Default Quality", ["1080p", "720p", "480p"], "default_quality"),
             ("Default Download Quality", ["1080p", "720p", "480p"], "default_download_quality"),
             ("Download Engine", ["internal", "aria2c", "idm", "auto"], "download_mode"),
             ("Download Path", [], "download_directory"),
-            ("Player", ["mpv", "vlc"], "player"),
+            ("Player", ["ask", "mpv", "vlc"], "player"),
             ("Auto Next Episode", [True, False], "auto_next"),
             ("Discord Rich Presence", [True, False], "discord_rpc"),
 
@@ -1162,6 +1164,10 @@ class UIManager:
                 val_str = str(current_val)
                 if isinstance(current_val, bool):
                     val_str = "Enabled" if current_val else "Disabled"
+                if key == "preferred_provider":
+                    val_str = (current_val or "auto").capitalize()
+                if key == "player" and current_val == "ask":
+                    val_str = "Ask Every Time"
                 
                 content.append(f"{prefix} {label}: {val_str}\n", style=style)
             

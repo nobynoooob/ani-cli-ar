@@ -140,47 +140,22 @@ class AniCliWrapper:
 
         if language != 'Arabic Sub':
             is_dub = (language == 'English Dub')
-            from .scrapers.provider_manager import get_provider_list
-            providers = get_provider_list("english")
-            print(f"\033[1;36mSelect server for {anime.title_en} - Episode {ep.number}:\033[0m")
-            print("  [0] Auto-Test")
-            for i, p in enumerate(providers, 1):
-                print(f"  [{i}] {p.capitalize()}")
-            try:
-                sel = input("\nEnter number (0-4): ").strip()
-            except (KeyboardInterrupt, EOFError):
-                return False
-            provider_choice = "auto"
-            if sel.isdigit():
-                idx = int(sel)
-                if 1 <= idx <= len(providers):
-                    provider_choice = providers[idx - 1]
-
-            attempt_auto = False
-            while True:
-                label = "Auto-Test" if provider_choice == "auto" else provider_choice.capitalize()
-                print(f"\033[1;34mFetching {language} stream via {label}...\033[0m")
-                url_and_headers = (None, {})
-                with self.console.status(f"[bold cyan]Fetching English stream...[/bold cyan]", spinner="bouncingBar"):
-                    url_and_headers = self._fetch_english_stream(anime.title_en, ep.number, "best", is_dub, provider=provider_choice)
-                if url_and_headers and url_and_headers[0]:
-                    direct_url, stream_headers = url_and_headers
-                    print(f"\033[1;34mPlaying episode {ep.number} ({language})...\033[0m")
-                    self.player.play(direct_url, f"{anime.title_en} - Episode {ep.number}", headers=stream_headers)
-                    self.history.mark_watched(anime.id, ep.display_num, anime.title_en)
-                    self.history.save_history()
-                    return True
-                print(f"\033[1;31m{label} failed.\033[0m")
-                if provider_choice != "auto" and not attempt_auto:
-                    try:
-                        ans = input("Selected server failed. Would you like to switch to Auto-Test mode? [Y/n]: ").strip().lower()
-                    except (KeyboardInterrupt, EOFError):
-                        return False
-                    if ans in ("", "y", "yes"):
-                        provider_choice = "auto"
-                        attempt_auto = True
-                        continue
-                return False
+            preferred = self.settings_manager.get('preferred_provider', '') or "auto"
+            provider_choice = preferred.lower()
+            label = "Auto-Test" if provider_choice == "auto" else provider_choice.capitalize()
+            print(f"\033[1;34mFetching {language} stream via {label}...\033[0m")
+            url_and_headers = (None, {})
+            with self.console.status(f"[bold cyan]Fetching English stream...[/bold cyan]", spinner="bouncingBar"):
+                url_and_headers = self._fetch_english_stream(anime.title_en, ep.number, "best", is_dub, provider=provider_choice)
+            if url_and_headers and url_and_headers[0]:
+                direct_url, stream_headers = url_and_headers
+                print(f"\033[1;34mPlaying episode {ep.number} ({language})...\033[0m")
+                self.player.play(direct_url, f"{anime.title_en} - Episode {ep.number}", player_type=self.settings_manager.get('player', 'ask'), headers=stream_headers)
+                self.history.mark_watched(anime.id, ep.display_num, anime.title_en)
+                self.history.save_history()
+                return True
+            print(f"\033[1;31mNo working English stream found via {label}. Please try another provider.\033[0m")
+            return False
 
         server_data = None
         
@@ -225,7 +200,7 @@ class AniCliWrapper:
 
         print(f"\033[1;34mPlaying episode {ep.number} ({selected_q.name})...\033[0m")
         
-        self.player.play(direct_url, f"{anime.title_en} - Episode {ep.number}")
+        self.player.play(direct_url, f"{anime.title_en} - Episode {ep.number}", player_type=self.settings_manager.get('player', 'ask'))
         
         self.history.mark_watched(anime.id, ep.display_num, anime.title_en)
         self.history.save_history()

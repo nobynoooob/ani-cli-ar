@@ -31,6 +31,9 @@ _id availableEpisodesDetail }}"""
 
 _PLAYWRIGHT_TIMEOUT = 25.0
 
+_SESSION = requests.Session()
+_SESSION.headers.update({"User-Agent": USER_AGENT, "Referer": REFERRER})
+
 
 class MkissaScraper(BaseScraper):
 
@@ -38,12 +41,8 @@ class MkissaScraper(BaseScraper):
     def name(self) -> str:
         return "mkissa"
 
-    def __init__(self):
-        self.session = requests.Session()
-        self.session.headers.update({"User-Agent": USER_AGENT, "Referer": REFERRER})
-
     def search(self, query: str) -> List[Dict]:
-        resp = self.session.post(
+        resp = _SESSION.post(
             f"{API_BASE}/api",
             json={
                 "variables": {
@@ -68,7 +67,7 @@ class MkissaScraper(BaseScraper):
         return results
 
     def get_episodes(self, anime_id: str) -> List[Dict]:
-        resp = self.session.post(
+        resp = _SESSION.post(
             f"{API_BASE}/api",
             json={"variables": {"showId": anime_id}, "query": _EPISODES_GQL},
             headers={"Content-Type": "application/json", "Origin": REFERRER},

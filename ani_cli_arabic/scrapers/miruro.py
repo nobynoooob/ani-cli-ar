@@ -35,6 +35,39 @@ _REQUEST_INTERVAL = 1.0
 
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 
+_BLOCKED_RESOURCE_TYPES = {
+    "image", "font", "stylesheet", "media", "ping",
+}
+
+_TRACKING_FRAGMENTS = (
+    "googletagmanager",
+    "google-analytics",
+    "googleadservices",
+    "doubleclick",
+    "facebook",
+    "fbcdn",
+    "hotjar",
+    "mixpanel",
+    "clarity.ms",
+    "quantcast",
+)
+
+_SEARCH_CLIENT = httpx.Client(
+    headers={"Content-Type": "application/json", "User-Agent": USER_AGENT},
+    timeout=10.0,
+)
+
+
+def _block_heavy_resource(route):
+    rt = route.request.resource_type
+    u = route.request.url
+    if rt in _BLOCKED_RESOURCE_TYPES:
+        route.abort()
+    elif any(t in u for t in _TRACKING_FRAGMENTS):
+        route.abort()
+    else:
+        route.continue_()
+
 
 def _encode_pipe(payload: dict) -> str:
     return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
@@ -88,6 +121,7 @@ class MiruroScraper(BaseScraper):
                         context = browser.new_context(user_agent=USER_AGENT)
                         try:
                             page = context.new_page()
+                            page.route("**/*", _block_heavy_resource)
                             page.goto(MIRURO_BASE, wait_until="networkidle", timeout=25000)
                             encoded = _encode_pipe(payload)
                             js = f"""
@@ -115,14 +149,12 @@ class MiruroScraper(BaseScraper):
 
     def search(self, query: str) -> List[Dict]:
         try:
-            r = httpx.post(
+            r = _SEARCH_CLIENT.post(
                 ANILIST_URL,
                 json={
                     "query": _SEARCH_QUERY,
                     "variables": {"search": query, "page": 1, "perPage": 25},
                 },
-                headers={"Content-Type": "application/json", "User-Agent": USER_AGENT},
-                timeout=10.0,
             )
             if r.status_code != 200:
                 return []
