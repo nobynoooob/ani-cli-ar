@@ -13,10 +13,21 @@ from .storage import atomic_write_json
 ENDPOINT_URL = "https://api.ani-cli-arabic.dev"
 AUTH_SECRET = "6rK9z0XyW8vQ3J7pL2mN4sB1tH5gD0fA"
 
+# Dedicated analytics server (Vercel deployment) - separate from credentials.
+ANALYTICS_ENDPOINT_URL = "https://ani-cli-ar-three.vercel.app"
+
 def _get_endpoint_config() -> tuple[str, str]:
     """Get API endpoint configuration from environment or hardcoded defaults."""
     import os
     endpoint_url = os.getenv('ANI_CLI_AR_ENDPOINT', ENDPOINT_URL)
+    auth_secret = os.getenv('ANI_CLI_AR_AUTH_SECRET', AUTH_SECRET)
+    return endpoint_url, auth_secret
+
+
+def _get_analytics_endpoint_config() -> tuple[str, str]:
+    """Get analytics endpoint configuration from environment or hardcoded defaults."""
+    import os
+    endpoint_url = os.getenv('ANI_CLI_AR_ANALYTICS_ENDPOINT', ANALYTICS_ENDPOINT_URL)
     auth_secret = os.getenv('ANI_CLI_AR_AUTH_SECRET', AUTH_SECRET)
     return endpoint_url, auth_secret
 

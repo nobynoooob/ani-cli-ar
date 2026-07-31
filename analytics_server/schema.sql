@@ -18,8 +18,14 @@ CREATE INDEX IF NOT EXISTS idx_usage_logs_timestamp
 
 ALTER TABLE public.usage_logs ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY insert_usage_logs
+CREATE POLICY insert_usage_logs_anon
     ON public.usage_logs
     FOR INSERT
     TO anon
+    WITH CHECK (true);
+
+CREATE POLICY insert_usage_logs_authenticated
+    ON public.usage_logs
+    FOR INSERT
+    TO authenticated
     WITH CHECK (true);

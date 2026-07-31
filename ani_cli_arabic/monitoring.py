@@ -3,7 +3,7 @@ import hashlib
 import threading
 import requests
 from datetime import datetime, timezone
-from .api import _get_endpoint_config
+from .api import _get_analytics_endpoint_config
 from .config import CURRENT_VERSION
 
 class MonitoringSystem:
@@ -48,7 +48,7 @@ class MonitoringSystem:
         
         def worker():
             try:
-                endpoint_url, auth_secret = _get_endpoint_config()
+                endpoint_url, auth_secret = _get_analytics_endpoint_config()
                 
                 payload = {
                     "fingerprint": self.user_fingerprint,
