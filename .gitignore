@@ -63,6 +63,11 @@ bin/
 user_config_backup.py
 config.json.bak
 
+# Environment variables
+.env
+.env.*
+!.env.example
+
 # Temporary files
 temp/
 tmp/
