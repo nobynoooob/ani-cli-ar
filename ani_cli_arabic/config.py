@@ -6,6 +6,9 @@ DISCORD_LOGO_URL = "https://i.postimg.cc/DydJfKY3/logo.gif"
 DISCORD_LOGO_TEXT = f"ani-cli-arabic {APP_VERSION}"
 MYANIMELIST_API_BASE = "https://api.jikan.moe/v4/anime/"
 
+SUPABASE_DEFAULT_URL = "https://mxacanxpjkqeudlwzhwr.supabase.co"
+SUPABASE_DEFAULT_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im14YWNhbnhwamtxZXVkbHd6aHdyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU0ODUzMTYsImV4cCI6MjEwMTA2MTMxNn0.16feJcv05kBlNLNbbdYZS1riN_MMhIgaZzaqOsw_ilI"
+
 DEFAULT_HEADER_ART = f"""
    ▄████████ ███▄▄▄▄    ▄█        ▄████████  ▄█        ▄█          ▄████████    ▄████████
   ███    ███ ███▀▀▀██▄ ███       ███    ███ ███       ███         ███    ███   ███    ███

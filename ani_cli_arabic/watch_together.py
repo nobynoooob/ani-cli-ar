@@ -11,6 +11,7 @@ import threading
 import time
 from typing import Any, Callable, Dict, Optional, Tuple
 
+from .config import SUPABASE_DEFAULT_KEY, SUPABASE_DEFAULT_URL
 from .player import PlayerManager
 
 ROOM_CODE_LEN = 6
@@ -34,8 +35,8 @@ def _socket_path(code: str) -> str:
 
 
 def _supabase_credentials() -> Tuple[str, str]:
-    url = os.environ.get("SUPABASE_URL", "")
-    key = os.environ.get("SUPABASE_KEY", "")
+    url = os.environ.get("SUPABASE_URL", "") or SUPABASE_DEFAULT_URL
+    key = os.environ.get("SUPABASE_KEY", "") or SUPABASE_DEFAULT_KEY
     return url, key
 
 

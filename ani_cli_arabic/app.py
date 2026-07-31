@@ -373,7 +373,7 @@ class AniCliArApp:
         if not host.start():
             self.ui.render_message(
                 "Watch Together",
-                "Could not connect to Supabase Realtime.\n\nSet SUPABASE_URL and SUPABASE_KEY environment\nvariables and ensure Realtime is enabled.",
+                "Could not connect to Supabase Realtime.\n\nCheck your internet connection and make sure\nRealtime is enabled on the Supabase project.",
                 "error",
             )
             return
@@ -409,7 +409,7 @@ class AniCliArApp:
         if not guest.start():
             self.ui.render_message(
                 "Watch Together",
-                "Could not connect to the room.\n\nMake sure the code is correct and the host\nis online. Also check SUPABASE_URL / SUPABASE_KEY.",
+                "Could not connect to the room.\n\nMake sure the code is correct and the host\nis online. Also check your internet connection.",
                 "error",
             )
             return
