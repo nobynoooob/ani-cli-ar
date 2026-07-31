@@ -368,8 +368,35 @@ class AniCliArApp:
             "info",
         )
 
+    def _select_watch_player(self):
+        players = self.player.get_available_players()
+        names = [n.lower() for n in players]
+        available = [p for p in ("mpv", "vlc") if p in names]
+        if not available:
+            self.ui.render_message(
+                "Watch Together",
+                "No supported player (mpv/VLC) found.",
+                "error",
+            )
+            return None
+        preferred = (self.settings.get('player') or 'ask').strip().lower()
+        if preferred in available:
+            return preferred
+        if len(available) == 1:
+            return available[0]
+        choice = self.ui.selection_menu(
+            [p.upper() for p in available],
+            title="Select Player",
+        )
+        if choice is None:
+            return None
+        return choice.lower()
+
     def _start_watch_host(self):
-        host = watch_together.WatchHost()
+        player_kind = self._select_watch_player()
+        if player_kind is None:
+            return
+        host = watch_together.WatchHost(player_kind=player_kind)
         if not host.start():
             self.ui.render_message(
                 "Watch Together",
@@ -405,7 +432,10 @@ class AniCliArApp:
                 "error",
             )
             return
-        guest = watch_together.WatchGuest(code)
+        player_kind = self._select_watch_player()
+        if player_kind is None:
+            return
+        guest = watch_together.WatchGuest(code, player_kind=player_kind)
         if not guest.start():
             self.ui.render_message(
                 "Watch Together",
@@ -1050,7 +1080,7 @@ class AniCliArApp:
                     return "download"
                 return None
             else:
-                player_type = 'mpv' if self.watch_host else self.settings.get('player')
+                player_type = self.watch_host.player_kind if self.watch_host else self.settings.get('player')
                 
                 from rich.text import Text
                 from rich.panel import Panel
@@ -1083,11 +1113,15 @@ class AniCliArApp:
                 monitor.track_video_play(selected_anime.title_en, str(selected_ep.display_num))
                 
                 ipc_socket = None
+                rc_port = None
                 if self.watch_host is not None:
-                    ipc_socket = self.watch_host.socket_path
+                    if self.watch_host.player_kind == "vlc":
+                        rc_port = self.watch_host.rc_port
+                    else:
+                        ipc_socket = self.watch_host.socket_path
                     self.watch_host.notify_load(selected_anime.title_en, selected_ep.display_num, "Arabic Sub")
                 
-                self.player.play(direct_url, f"{selected_anime.title_en} - Ep {selected_ep.display_num} ({quality.name})", player_type=player_type, ipc_socket=ipc_socket)
+                self.player.play(direct_url, f"{selected_anime.title_en} - Ep {selected_ep.display_num} ({quality.name})", player_type=player_type, ipc_socket=ipc_socket, rc_port=rc_port)
                 if self.watch_host is not None:
                     self.watch_host.notify_stop()
                 self.ui.clear()
@@ -1159,7 +1193,7 @@ class AniCliArApp:
             return None
 
         direct_url, stream_headers = url_and_headers
-        player_type = 'mpv' if self.watch_host else self.settings.get('player')
+        player_type = self.watch_host.player_kind if self.watch_host else self.settings.get('player')
         suffix = " [English Dub]" if dub else " [English Sub]"
 
         watching_text = Text()
@@ -1187,15 +1221,19 @@ class AniCliArApp:
         monitor.track_video_play(selected_anime.title_en, str(selected_ep.display_num))
 
         ipc_socket = None
+        rc_port = None
         if self.watch_host is not None:
-            ipc_socket = self.watch_host.socket_path
+            if self.watch_host.player_kind == "vlc":
+                rc_port = self.watch_host.rc_port
+            else:
+                ipc_socket = self.watch_host.socket_path
             self.watch_host.notify_load(
                 selected_anime.title_en,
                 selected_ep.display_num,
                 "English Dub" if dub else "English Sub",
             )
 
-        self.player.play(direct_url, f"{selected_anime.title_en} - Ep {selected_ep.display_num}", player_type=player_type, headers=stream_headers, ipc_socket=ipc_socket)
+        self.player.play(direct_url, f"{selected_anime.title_en} - Ep {selected_ep.display_num}", player_type=player_type, headers=stream_headers, ipc_socket=ipc_socket, rc_port=rc_port)
         if self.watch_host is not None:
             self.watch_host.notify_stop()
         self.ui.clear()

@@ -67,6 +67,50 @@ class PlayerManager:
         mpv_args.append(url)
         return mpv_args
 
+    def build_vlc_args(
+        self,
+        vlc_path: str,
+        url: str,
+        title: str = "",
+        headers: Optional[dict] = None,
+        rc_port: Optional[int] = None,
+        lock_controls: bool = False,
+    ) -> list:
+        """Build VLC arguments. rc_port enables the rc interface over TCP
+        (used for Watch Together sync). With lock_controls, playback hotkeys
+        are unbound so guests cannot pause/seek manually."""
+        vlc_args = [vlc_path, '--fullscreen', '--no-video-title-show']
+        if title:
+            vlc_args.append('--meta-title=' + title)
+        if rc_port:
+            vlc_args += [
+                '--extraintf=rc',
+                '--rc-host=127.0.0.1:' + str(rc_port),
+            ]
+        else:
+            vlc_args.append('--play-and-exit')
+        if lock_controls:
+            vlc_args += [
+                '--key-play=',
+                '--key-jump+short=',
+                '--key-jump+medium=',
+                '--key-jump+long=',
+                '--key-jump+extrashort=',
+                '--key-next=',
+                '--key-prev=',
+                '--key-stop=',
+                '--key-quit=',
+            ]
+        if headers:
+            ref = headers.get('Referer')
+            if ref:
+                vlc_args.append('--http-referrer=' + ref)
+            ua = headers.get('User-Agent')
+            if ua:
+                vlc_args.append('--http-user-agent=' + ua)
+        vlc_args.append(url)
+        return vlc_args
+
     def _create_guest_input_conf(self) -> Optional[str]:
         try:
             fd, path = tempfile.mkstemp(prefix='ani_cli_guest_input_', suffix='.conf')
@@ -182,7 +226,7 @@ class PlayerManager:
 
         return players
 
-    def play(self, url: str, title: str, player_type: str = 'ask', headers: Optional[dict] = None, ipc_socket: Optional[str] = None):
+    def play(self, url: str, title: str, player_type: str = 'ask', headers: Optional[dict] = None, ipc_socket: Optional[str] = None, rc_port: Optional[int] = None):
         if not url:
             msg = "Error: Extracted stream URL is invalid or empty."
             if self.console:
@@ -267,7 +311,7 @@ class PlayerManager:
 
         try:
             if selected_player == 'VLC':
-                self._play_vlc(url, title, available_players['VLC'], headers)
+                self._play_vlc(url, title, available_players['VLC'], headers, rc_port=rc_port)
             elif selected_player == 'MPV':
                 self._play_mpv(url, title, available_players['MPV'], headers, ipc_socket=ipc_socket)
             elif selected_player == 'MPC-HC':
@@ -281,7 +325,7 @@ class PlayerManager:
                 print(f"Error launching player: {str(e)}", file=sys.stderr)
                 input("Press Enter to continue...")
 
-    def _play_vlc(self, url: str, title: str, vlc_path: str = None, headers: dict = None):
+    def _play_vlc(self, url: str, title: str, vlc_path: str = None, headers: dict = None, rc_port: Optional[int] = None):
         if not vlc_path:
             vlc_path = self.get_available_players().get('VLC')
 
@@ -293,15 +337,13 @@ class PlayerManager:
 
         url = url.strip().strip('"').strip("'")
 
-        vlc_args = [
+        vlc_args = self.build_vlc_args(
             vlc_path,
-            '--fullscreen',
-            '--play-and-exit',
-            '--meta-title', title,
-        ]
-        if headers and headers.get('Referer'):
-            vlc_args += ['--http-referrer=' + headers['Referer']]
-        vlc_args.append(url)
+            url,
+            title=title,
+            headers=headers,
+            rc_port=rc_port,
+        )
 
         if self.console:
             from rich.text import Text

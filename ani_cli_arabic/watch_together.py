@@ -314,6 +314,151 @@ class MpvIpcClient:
         self.send_command(["set_property", "time-pos", float(seconds)])
 
 
+def _pick_free_port() -> int:
+    """Pick an available TCP port for the VLC rc interface."""
+    for _ in range(100):
+        port = random.randint(42000, 43000)
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.bind(("127.0.0.1", port))
+            s.close()
+            return port
+        except OSError:
+            continue
+    return random.randint(42000, 43000)
+
+
+class VlcIpcClient:
+    """Client for the VLC rc interface over TCP.
+
+    VLC is launched with `--extraintf rc --rc-host 127.0.0.1:<port>` and
+    controlled by sending plain-text commands terminated by newline. Every
+    response ends with the `> ` prompt. `--rc-quiet` is not available on
+    VLC 3.x (dropped after 2.x), so the prompt-delimited parsing below is used.
+    """
+
+    def __init__(self, host: str = "127.0.0.1", port: int = 0):
+        self.host = host
+        self.port = port
+        self._sock: Optional[socket.socket] = None
+        self._lock = threading.Lock()
+        self._buf = b""
+
+    @property
+    def connected(self) -> bool:
+        return self._sock is not None
+
+    def connect(self, timeout: float = 15.0) -> bool:
+        if self.connected:
+            return True
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                sock = socket.create_connection((self.host, self.port), timeout=2.0)
+                sock.settimeout(2.0)
+                self._sock = sock
+                self._buf = b""
+                self._read_response(timeout=4.0)
+                return True
+            except OSError:
+                time.sleep(0.3)
+        return False
+
+    def close(self):
+        if self._sock is not None:
+            try:
+                self._sock.sendall(b"quit\n")
+            except OSError:
+                pass
+            try:
+                self._sock.close()
+            except OSError:
+                pass
+            self._sock = None
+        self._buf = b""
+
+    def _send(self, line: str):
+        if self._sock is None:
+            raise OSError("VLC rc not connected")
+        self._sock.sendall((line + "\n").encode("utf-8"))
+
+    def _read_response(self, timeout: float = 2.0) -> str:
+        """Read until the VLC `> ` prompt. Returns everything before it."""
+        if self._sock is None:
+            return ""
+        self._sock.settimeout(timeout)
+        out = b""
+        while True:
+            idx = self._buf.find(b"> ")
+            if idx != -1:
+                out += self._buf[:idx]
+                self._buf = self._buf[idx + 2:]
+                return out.decode("utf-8", errors="replace")
+            try:
+                chunk = self._sock.recv(4096)
+            except socket.timeout:
+                break
+            except OSError:
+                break
+            if not chunk:
+                break
+            self._buf += chunk
+        idx = self._buf.find(b"> ")
+        if idx != -1:
+            out += self._buf[:idx]
+            self._buf = self._buf[idx + 2:]
+        else:
+            out += self._buf
+            self._buf = b""
+        return out.decode("utf-8", errors="replace")
+
+    def request(self, command: str, timeout: float = 2.0) -> Optional[str]:
+        with self._lock:
+            if self._sock is None:
+                return None
+            try:
+                self._send(command)
+            except OSError:
+                return None
+            resp = self._read_response(timeout)
+            lines = resp.splitlines()
+            if lines and lines[0].strip() == command.strip():
+                return "\n".join(lines[1:])
+            return resp
+
+    def get_time_pos(self) -> Optional[float]:
+        resp = self.request("get_time") or ""
+        for line in resp.splitlines():
+            line = line.strip()
+            if line.isdigit():
+                return float(int(line))
+        return None
+
+    def get_pause(self) -> Optional[bool]:
+        resp = self.request("status") or ""
+        for line in resp.splitlines():
+            line = line.strip()
+            if line.startswith("( state"):
+                tokens = line.strip("()").split()
+                if len(tokens) >= 2:
+                    if tokens[-1] == "paused":
+                        return True
+                    if tokens[-1] == "playing":
+                        return False
+                    return None
+        return None
+
+    def set_pause(self, paused: bool):
+        current = self.get_pause()
+        if current is None:
+            return
+        if current != paused:
+            self.request("pause")
+
+    def seek(self, seconds: float):
+        self.request(f"seek {int(seconds)}")
+
+
 def _loadfile_command(url: str, headers: Optional[Dict[str, str]]) -> list:
     options: Dict[str, list] = {}
     if headers:
@@ -327,14 +472,20 @@ def _loadfile_command(url: str, headers: Optional[Dict[str, str]]) -> list:
 
 
 class WatchHost:
-    def __init__(self):
+    def __init__(self, player_kind: str = "mpv"):
         self.code = "".join(str(random.randint(0, 9)) for _ in range(ROOM_CODE_LEN))
         self.socket_path = _unique_socket_path(self.code)
+        self.player_kind = player_kind
+        self.rc_port: Optional[int] = None
         self._rt = SupabaseRealtime()
         self._channel = None
         self._stop = threading.Event()
         self._player = PlayerManager()
-        self._ipc = MpvIpcClient(self.socket_path)
+        if player_kind == "vlc":
+            self.rc_port = _pick_free_port()
+            self._ipc = VlcIpcClient("127.0.0.1", self.rc_port)
+        else:
+            self._ipc = MpvIpcClient(self.socket_path)
         self._current = {}
         self._sync_thread: Optional[threading.Thread] = None
         self._active = False
@@ -425,14 +576,20 @@ class WatchHost:
 
 
 class WatchGuest:
-    def __init__(self, code: str):
+    def __init__(self, code: str, player_kind: str = "mpv"):
         self.code = code
         self.socket_path = _unique_socket_path(code)
+        self.player_kind = player_kind
+        self.rc_port: Optional[int] = None
         self._rt = SupabaseRealtime()
         self._channel = None
         self._stop = threading.Event()
-        self._ipc = MpvIpcClient(self.socket_path)
-        self._mpv_proc: Optional[subprocess.Popen] = None
+        if player_kind == "vlc":
+            self.rc_port = _pick_free_port()
+            self._ipc = VlcIpcClient("127.0.0.1", self.rc_port)
+        else:
+            self._ipc = MpvIpcClient(self.socket_path)
+        self._player_proc: Optional[subprocess.Popen] = None
         self._state_lock = threading.Lock()
         self._pending = {}
         self._last_host_time: Optional[float] = None
@@ -543,46 +700,56 @@ class WatchGuest:
             if not url:
                 self._pending = {}
                 return
-            self._launch_mpv(url, headers)
+            self._launch_player(url, headers)
             self._pending = {}
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _launch_mpv(self, url: str, headers: Dict[str, str]):
-        mpv_path = self._player.get_mpv_path()
-        args = self._player.build_mpv_args(
-            mpv_path,
-            url,
-            headers=headers,
-            ipc_socket=self.socket_path,
-            lock_controls=True,
-        )
-        if self._mpv_proc is not None:
+    def _launch_player(self, url: str, headers: Dict[str, str]):
+        if self.player_kind == "vlc":
+            vlc_path = self._player.get_available_players().get("VLC") or "vlc"
+            args = self._player.build_vlc_args(
+                vlc_path,
+                url,
+                headers=headers,
+                rc_port=self.rc_port,
+                lock_controls=True,
+            )
+        else:
+            mpv_path = self._player.get_mpv_path()
+            args = self._player.build_mpv_args(
+                mpv_path,
+                url,
+                headers=headers,
+                ipc_socket=self.socket_path,
+                lock_controls=True,
+            )
+        if self._player_proc is not None:
             try:
-                self._mpv_proc.kill()
+                self._player_proc.kill()
             except Exception:
                 pass
         try:
-            self._mpv_proc = subprocess.Popen(
+            self._player_proc = subprocess.Popen(
                 args,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 stdin=subprocess.DEVNULL,
             )
         except Exception:
-            self._mpv_proc = None
+            self._player_proc = None
             return
-        threading.Thread(target=self._watch_mpv_exit, daemon=True).start()
+        threading.Thread(target=self._watch_player_exit, daemon=True).start()
         threading.Thread(target=self._apply_pending, daemon=True).start()
 
-    def _watch_mpv_exit(self):
-        proc = self._mpv_proc
+    def _watch_player_exit(self):
+        proc = self._player_proc
         if proc is None:
             return
         proc.wait()
-        if self._mpv_proc is proc:
+        if self._player_proc is proc:
             self._ipc.close()
-            self._mpv_proc = None
+            self._player_proc = None
         self._player.cleanup_guest_input_conf()
 
     def _apply_pending(self):
@@ -641,9 +808,9 @@ class WatchGuest:
     def stop(self):
         self._stop.set()
         self._active = False
-        if self._mpv_proc is not None:
+        if self._player_proc is not None:
             try:
-                self._mpv_proc.kill()
+                self._player_proc.kill()
             except Exception:
                 pass
         self._ipc.close()

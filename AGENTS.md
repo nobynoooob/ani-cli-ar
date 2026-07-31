@@ -32,6 +32,16 @@
 - Uses `api.py` endpoints and `get_streaming_servers()` / `build_mediafire_url()` for quality selection
 - Kept strictly separated from English code — English and Arabic provider loops must never mix or cross-fallback
 
+## Watch Together players
+- Host and guest each pick mpv or VLC at session start (`app.py:_select_watch_player`, respects `settings.player` default).
+- mpv host: `MpvIpcClient` on a unique Unix socket (`_unique_socket_path`). VLC host: `VlcIpcClient` over TCP on a free loopback port (`_pick_free_port`, range 42000-43000), selected before launch.
+- VLC is launched with `--extraintf=rc --rc-host=127.0.0.1:<PORT>` (host, keeps Qt GUI) or `--intf=rc` is NOT used — guests use the same `--extraintf=rc` launch plus unbind hotkeys.
+- **`--rc-quiet` is NOT available on VLC 3.x** (dropped after 2.x) — do not pass it; the rc interface doesn't echo commands in VLC 3, and responses are terminated by the `> ` prompt.
+- VLC rc commands used: `get_time` (integer seconds), `status` (parse `( state playing|paused|stopped )`), `seek <int>` (absolute), `pause` (toggles), `play`, `quit`. `is_playing` is unreliable for pause detection (returns 1 while paused) — use `status`.
+- `set_pause()` reads current state first, then sends `pause` only if mismatched (since `pause` toggles).
+- Guest VLC control lock: `--key-play= --key-jump+short= --key-jump+medium= --key-jump+long= --key-jump+extrashort= --key-next= --key-prev= --key-stop= --key-quit=` (inline empty values). **Never** pass empty-string values as separate argv entries (`--key-play=` `""`) — VLC treats the `""` as an empty MRL and opens a DVD instead of the URL.
+- Both `MpvIpcClient` and `VlcIpcClient` expose the same interface: `connect`, `close`, `get_time_pos`, `get_pause`, `set_pause`, `seek`, `connected`. Broadcasts stay player-agnostic JSON.
+
 ## Key files
 | File | Purpose |
 |------|---------|
@@ -43,6 +53,8 @@
 | `api.py` | Arabic provider `AnimeAPI` |
 | `app.py` | Main entry, TUI mode |
 | `cli.py` | Minimal CLI mode |
+| `watch_together.py` | Watch Together: `SupabaseRealtime`, `MpvIpcClient`, `VlcIpcClient`, `WatchHost`/`WatchGuest` |
+| `player.py` | `PlayerManager`: mpv/VLC arg builders, `build_vlc_args` (rc + lock flags) |
 
 ## External tooling
 - **mpv** required for playback (auto-installed by `deps.py`)
