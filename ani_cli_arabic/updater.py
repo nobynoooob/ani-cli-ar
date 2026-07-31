@@ -5,7 +5,7 @@ import subprocess
 import requests
 from pathlib import Path
 
-from .version import __version__, APP_VERSION, API_RELEASES_URL
+from .version import __version__, APP_VERSION, API_RELEASES_URL, GITHUB_INSTALL_URL
 from .config import COLOR_PROMPT
 from .utils import is_bundled
 
@@ -278,3 +278,45 @@ def check_for_updates(console=None, auto_update=True):
         pass
     
     return False
+
+
+def update_from_github():
+    pip_cmd = [sys.executable, "-m", "pip", "install", "--upgrade", GITHUB_INSTALL_URL]
+
+    is_venv = sys.prefix != getattr(sys, "base_prefix", sys.prefix)
+    if platform.system() != "Windows" and not is_venv:
+        pip_cmd.append("--user")
+
+    _print_header("Updating from GitHub")
+    _print_info(f"Source: {GITHUB_INSTALL_URL}")
+    print()
+
+    try:
+        result = subprocess.run(pip_cmd, capture_output=True, text=True)
+
+        if result.returncode != 0 and "externally-managed-environment" in result.stderr:
+            _print_info("Restricted environment detected, retrying with --break-system-packages ...")
+            if "--user" in pip_cmd:
+                pip_cmd.remove("--user")
+            pip_cmd.append("--break-system-packages")
+            result = subprocess.run(pip_cmd, capture_output=True, text=True)
+
+        if result.returncode == 0:
+            _print_success("Update installed successfully.")
+            print()
+            _print_info("Please restart the application to apply the changes.")
+            return True
+        else:
+            _print_error(f"Update failed. (Exit code: {result.returncode})")
+            if "externally-managed-environment" in result.stderr:
+                _print_info("Your system uses a restricted Python environment (PEP 668).")
+                _print_info("Try: pip install --upgrade --break-system-packages git+https://github.com/np4abdou1/ani-cli-arabic.git")  # noqa: E501
+            else:
+                _print_info("Try manually: pip install --upgrade git+https://github.com/np4abdou1/ani-cli-arabic.git")  # noqa: E501
+            print()
+            _print_error("Details:")
+            print(result.stderr.strip()[:500])
+            return False
+    except Exception as e:
+        _print_error(f"Unexpected error during update: {e}")
+        return False

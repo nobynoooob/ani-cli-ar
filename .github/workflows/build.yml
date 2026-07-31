@@ -1,0 +1,58 @@
+name: Build Windows Executable
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pyinstaller
+
+      - name: Install Playwright browsers
+        run: |
+          python -m playwright install chromium
+
+      - name: Download and bundle mpv
+        run: |
+          $mpvUrl = "https://sourceforge.net/projects/mpv-player-windows/files/64bit/mpv-x86_64-20250119.7z/download"
+          curl -L -o mpv.7z $mpvUrl
+          7z x mpv.7z -ompv_bundle
+          $mpvExe = Get-ChildItem -Recurse -Filter "mpv.exe" -Path "mpv_bundle" | Select-Object -First 1
+          if ($mpvExe) {
+            Copy-Item $mpvExe.FullName -Destination "mpv/"
+            Write-Host "mpv.exe bundled successfully"
+          }
+
+      - name: Build executable
+        run: |
+          python scripts/build.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ani-cli-ar-windows
+          path: dist/ani-cli-ar.exe
+
+      - name: Create release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/ani-cli-ar.exe
+          generate_release_notes: true

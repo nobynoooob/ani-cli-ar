@@ -45,15 +45,13 @@ class AniCliArApp:
             description="ani-cli-arabic: A CLI tool to browse and watch anime in Arabic.",
             formatter_class=argparse.RawTextHelpFormatter
         )
+        parser.add_argument('-U', '--update', action='store_true', help="Self-update from PyPI via pip")
         parser.add_argument('-i', '--interactive', action='store_true', help="Force minimal interactive CLI mode")
         parser.add_argument('-v', '--version', action='store_true', help="Show version information")
         parser.add_argument('--sub', action='store_true', help="Override: use English Subtitled streams")
         parser.add_argument('--dub', action='store_true', help="Override: use English Dubbed streams")
-        parser.add_argument('--provider', type=str, default=None, choices=['mkissa', 'gogoanime'],
-                            help="Preferred English stream provider (overrides auto-fallback; 'miruro' and 'api' also available but not listed as choices)")
-        # KNOWN: 'miruro' and 'api' providers are registered in ProviderManager
-        # but not in argparse choices. Use get_provider_list('english') for runtime.
-        
+        parser.add_argument('--provider', type=str, default=None,
+                            help="Preferred English stream provider (overrides auto-fallback)")
         parser.add_argument('query', nargs='*', help="Anime name to search for")
         
         args = parser.parse_args()
@@ -62,6 +60,42 @@ class AniCliArApp:
             from .version import __version__
             print(f"ani-cli-arabic v{__version__}")
             sys.exit(0)
+
+        if args.update:
+            import json
+            import urllib.request
+            import subprocess
+            from .version import __version__
+
+            try:
+                resp = urllib.request.urlopen(
+                    "https://pypi.org/pypi/ani-cli-ar/json", timeout=10
+                )
+                latest = json.load(resp)["info"]["version"]
+            except Exception:
+                print("Failed to check latest version. Trying update anyway...")
+                latest = None
+
+            if latest and latest == __version__:
+                print(f"ani-cli-ar is already up to date! (v{__version__})")
+                sys.exit(0)
+
+            if latest:
+                print(f"Updating ani-cli-ar from v{__version__} to v{latest}...")
+            else:
+                print(f"Updating ani-cli-ar...")
+
+            pip_cmd = [
+                sys.executable, "-m", "pip", "install",
+                "--upgrade", "ani-cli-ar",
+                "--break-system-packages",
+            ]
+            result = subprocess.run(pip_cmd, capture_output=True, text=True)
+            if result.returncode == 0:
+                print("Successfully updated ani-cli-ar!")
+            else:
+                print(f"Update failed:\n{result.stderr.strip()}")
+            sys.exit(result.returncode)
             
         self.force_cli = args.interactive
 
@@ -710,8 +744,9 @@ class AniCliArApp:
         preferred = self.settings.get('preferred_provider', '')
         pm = ProviderManager(preferred_provider=preferred if preferred else None)
 
+        mode = "dub" if dub else "sub"
         url, headers, _ = asyncio.run(
-            pm.resolve_stream(anime_title, episode_num, language="english", provider=provider)
+            pm.resolve_stream(anime_title, episode_num, mode=mode, language="english", provider=provider)
         )
         return url, headers
 

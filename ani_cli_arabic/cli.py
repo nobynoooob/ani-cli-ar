@@ -129,8 +129,9 @@ class AniCliWrapper:
         preferred = self.settings_manager.get('preferred_provider', '')
         pm = ProviderManager(preferred_provider=preferred if preferred else None)
 
+        mode = "dub" if dub else "sub"
         url, headers, _ = asyncio.run(
-            pm.resolve_stream(anime_title, episode_num, language="english", provider=provider)
+            pm.resolve_stream(anime_title, episode_num, mode=mode, language="english", provider=provider)
         )
         return url, headers
 

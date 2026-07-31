@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sys
 from typing import Dict, List, Optional, Tuple
 
@@ -78,7 +79,9 @@ class ProviderManager:
             sys.stderr.write(f"[?] Attempting provider: {name}...\n")
             try:
                 result = await asyncio.wait_for(
-                    asyncio.to_thread(self._try_provider, scraper, anime_title, episode_num),
+                    asyncio.to_thread(
+                        self._try_provider, scraper, anime_title, episode_num, mode
+                    ),
                     timeout=_PROVIDER_TIMEOUT,
                 )
                 if result:
@@ -99,7 +102,13 @@ class ProviderManager:
         return None, {}, None
 
     @staticmethod
-    def _try_provider(scraper: BaseScraper, anime_title: str, episode_num) -> Optional[Tuple[str, Dict]]:
+    def _try_provider(
+        scraper: BaseScraper, anime_title: str, episode_num, mode: str = "sub"
+    ) -> Optional[Tuple[str, Dict]]:
+        mode_clean = (mode or "sub").lower()
+        if mode_clean not in ("sub", "dub"):
+            mode_clean = "sub"
+
         try:
             results = scraper.search(anime_title)
         except Exception:
@@ -108,7 +117,10 @@ class ProviderManager:
             return None
 
         anime_id = results[0]["id"]
+
         try:
+            if hasattr(scraper, "preferred_category"):
+                scraper.preferred_category = mode_clean
             eps = scraper.get_episodes(anime_id)
         except Exception:
             return None
@@ -123,6 +135,16 @@ class ProviderManager:
                 break
         if not ep_id:
             ep_id = eps[0]["id"]
+
+        if mode_clean == "dub":
+            try:
+                meta = json.loads(ep_id)
+                if meta.get("category", "sub") != "dub":
+                    sys.stderr.write(
+                        "[!] Dub not available for this title, falling back to Sub.\n"
+                    )
+            except (json.JSONDecodeError, TypeError):
+                pass
 
         try:
             stream = scraper.get_stream_url(ep_id)

@@ -2,6 +2,7 @@ import base64
 import gzip
 import json
 import threading
+import time
 from typing import Dict, List, Optional
 
 import httpx
@@ -28,6 +29,12 @@ query ($page: Int, $perPage: Int, $search: String) {
   }
 }"""
 
+_MAX_RETRIES = 3
+_RETRY_DELAY = 2.0
+_REQUEST_INTERVAL = 1.0
+
+_RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+
 
 def _encode_pipe(payload: dict) -> str:
     return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
@@ -41,47 +48,70 @@ def _decode_pipe(raw: str) -> dict:
 
 class MiruroScraper(BaseScraper):
 
-    _pw = None
-    _browser = None
-    _lock = threading.Lock()
+    _last_request_time = 0.0
+    _rate_limit_lock = threading.Lock()
 
     _PROVIDER_PRIORITY = ["pewe", "kiwi", "bee", "bonk", "ally", "moo", "hop"]
+
+    preferred_category = "sub"
 
     @property
     def name(self) -> str:
         return "miruro"
 
-    @staticmethod
-    def _get_shared_browser():
-        with MiruroScraper._lock:
-            if MiruroScraper._browser is None:
-                from playwright.sync_api import sync_playwright
-                MiruroScraper._pw = sync_playwright().start()
-                MiruroScraper._browser = MiruroScraper._pw.chromium.launch(
-                    headless=True,
-                    args=["--no-sandbox", "--disable-dev-shm-usage"],
-                )
-            return MiruroScraper._browser
+    @classmethod
+    def _respect_rate_limit(cls):
+        with cls._rate_limit_lock:
+            elapsed = time.time() - cls._last_request_time
+            if elapsed < _REQUEST_INTERVAL:
+                time.sleep(_REQUEST_INTERVAL - elapsed)
+            cls._last_request_time = time.time()
 
     def _pipe_fetch(self, payload: dict) -> Optional[dict]:
-        browser = self._get_shared_browser()
-        context = browser.new_context(user_agent=USER_AGENT)
-        try:
-            page = context.new_page()
-            page.goto(MIRURO_BASE, wait_until="networkidle", timeout=25000)
-            encoded = _encode_pipe(payload)
-            js = f"""
-            (async () => {{
-                const r = await fetch("{MIRURO_PIPE}?e={encoded}");
-                return {{status: r.status, text: await r.text()}};
-            }})()
-            """
-            result = page.evaluate(js)
-            if result.get("status") != 200:
-                return None
-            return _decode_pipe(result["text"].strip())
-        finally:
-            context.close()
+        from playwright.sync_api import sync_playwright
+
+        last_error = None
+        for attempt in range(_MAX_RETRIES):
+            if attempt > 0:
+                delay = _RETRY_DELAY * attempt
+                time.sleep(delay)
+
+            self._respect_rate_limit()
+
+            try:
+                with sync_playwright() as pw:
+                    browser = pw.chromium.launch(
+                        headless=True,
+                        args=["--no-sandbox", "--disable-dev-shm-usage"],
+                    )
+                    try:
+                        context = browser.new_context(user_agent=USER_AGENT)
+                        try:
+                            page = context.new_page()
+                            page.goto(MIRURO_BASE, wait_until="networkidle", timeout=25000)
+                            encoded = _encode_pipe(payload)
+                            js = f"""
+                            (async () => {{
+                                const r = await fetch("{MIRURO_PIPE}?e={encoded}");
+                                return {{status: r.status, text: await r.text()}};
+                            }})()
+                            """
+                            result = page.evaluate(js)
+                            status = result.get("status")
+                            if status in _RETRYABLE_STATUS:
+                                last_error = f"status {status}"
+                                continue
+                            if status != 200:
+                                return None
+                            return _decode_pipe(result["text"].strip())
+                        finally:
+                            context.close()
+                    finally:
+                        browser.close()
+            except Exception as e:
+                last_error = repr(e)
+
+        return None
 
     def search(self, query: str) -> List[Dict]:
         try:
@@ -137,7 +167,8 @@ class MiruroScraper(BaseScraper):
                     continue
                 eps = pdata.get("episodes", {})
                 if isinstance(eps, dict):
-                    for category in ("sub", "dub"):
+                    categories = ("dub", "sub") if self.preferred_category == "dub" else ("sub", "dub")
+                    for category in categories:
                         ep_list = eps.get(category, [])
                         if not isinstance(ep_list, list):
                             continue
