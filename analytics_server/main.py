@@ -1,6 +1,12 @@
 import os
 from typing import Any, Dict, Optional
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+except ImportError:
+    pass
+
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 from supabase import create_client, Client
