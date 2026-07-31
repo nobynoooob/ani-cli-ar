@@ -22,6 +22,7 @@ from .favorites import FavoritesManager
 from .updater import check_for_updates, get_version_status
 from .deps import ensure_dependencies
 from .config import GOODBYE_ART
+from . import watch_together
 import shutil
 import argparse
 
@@ -39,6 +40,8 @@ class AniCliArApp:
         self.force_cli = False
         self._cleaned_up = False
         self._language_override = None
+        self.watch_host = None
+        self.watch_guest = None
 
     def run(self):
         parser = argparse.ArgumentParser(
@@ -224,10 +227,15 @@ class AniCliArApp:
             else:
                 self.ui.print(Align.center(Text.from_markup("Discord Rich Presence [dim](disabled)[/dim]", style="dim")))
             
+            if self.watch_host is not None:
+                self.ui.print(Align.center(Text.from_markup(f"Watch Together: [bold green]Hosting Room {self.watch_host.code}[/bold green]", style="secondary")))
+            elif self.watch_guest is not None:
+                self.ui.print(Align.center(Text.from_markup(f"Watch Together: [bold yellow]Joined Room {self.watch_guest.code} (syncing)[/bold yellow]", style="secondary")))
+            
             self.ui.print()
 
             keybinds_panel = Panel(
-                Text("T: Trending | P: Popular | G: Genres | S: Studios | L: History | F: Favorites | C: Settings | Q: Quit", style="info", justify="center"),
+                Text("T: Trending | P: Popular | G: Genres | S: Studios | L: History | F: Favorites | W: Watch Together | C: Settings | Q: Quit", style="info", justify="center"),
                 box=HEAVY,
                 border_style=COLOR_BORDER
             )
@@ -298,6 +306,9 @@ class AniCliArApp:
                 self.rpc.update_settings()
                 self.ui.settings_menu(self.settings)
                 continue
+            elif query == 'w':
+                self.handle_watch_together()
+                continue
             elif query == 'a':
                 self.ui.show_credits()
                 continue
@@ -316,6 +327,107 @@ class AniCliArApp:
                 continue
             
             self.handle_anime_selection(results)
+
+    def handle_watch_together(self):
+        if self.watch_host is not None or self.watch_guest is not None:
+            choice = self.ui.selection_menu(
+                ["Stop Watch Together", "Keep Watching"],
+                title="Watch Together",
+            )
+            if choice == "Stop Watch Together":
+                self._stop_watch_session()
+            return
+
+        choice = self.ui.selection_menu(
+            ["Host a Room", "Join a Room"],
+            title="Watch Together",
+        )
+        if choice is None:
+            return
+        if choice == "Host a Room":
+            self._start_watch_host()
+        else:
+            self._join_watch_room()
+
+    def _stop_watch_session(self):
+        if self.watch_host is not None:
+            try:
+                self.watch_host.stop()
+            except Exception:
+                pass
+            self.watch_host = None
+        if self.watch_guest is not None:
+            try:
+                self.watch_guest.stop()
+            except Exception:
+                pass
+            self.watch_guest = None
+        self.ui.render_message(
+            "Watch Together",
+            "Session stopped.",
+            "info",
+        )
+
+    def _start_watch_host(self):
+        host = watch_together.WatchHost()
+        if not host.start():
+            self.ui.render_message(
+                "Watch Together",
+                "Could not connect to Supabase Realtime.\n\nSet SUPABASE_URL and SUPABASE_KEY environment\nvariables and ensure Realtime is enabled.",
+                "error",
+            )
+            return
+        self.watch_host = host
+        self.ui.clear()
+        panel = Panel(
+            Text(
+                f"Room code: {host.code}\n\nShare this 6-digit code with your friends.\n"
+                "They join with: Watch Together -> Join a Room",
+                style="bold",
+                justify="center",
+            ),
+            title=Text("HOSTING ROOM", style="title"),
+            box=HEAVY,
+            border_style=COLOR_BORDER,
+        )
+        self.ui.print(Align.center(panel, vertical="middle", height=self.ui.console.height))
+        input("\nPress ENTER to return to the menu...")
+
+    def _join_watch_room(self):
+        code = Prompt.ask(
+            "Enter 6-digit room code",
+            console=self.ui.console,
+        ).strip()
+        if len(code) != 6 or not code.isdigit():
+            self.ui.render_message(
+                "Watch Together",
+                "Invalid code. Room codes are 6 digits.",
+                "error",
+            )
+            return
+        guest = watch_together.WatchGuest(code)
+        if not guest.start():
+            self.ui.render_message(
+                "Watch Together",
+                "Could not connect to the room.\n\nMake sure the code is correct and the host\nis online. Also check SUPABASE_URL / SUPABASE_KEY.",
+                "error",
+            )
+            return
+        self.watch_guest = guest
+        self.ui.clear()
+        panel = Panel(
+            Text(
+                f"Joined room {code}.\n\nWaiting for the host to start an episode.\n"
+                "Your player will launch automatically and stay in sync.",
+                style="bold",
+                justify="center",
+            ),
+            title=Text("WATCHING TOGETHER", style="title"),
+            box=HEAVY,
+            border_style=COLOR_BORDER,
+        )
+        self.ui.print(Align.center(panel, vertical="middle", height=self.ui.console.height))
+        input("\nPress ENTER to return to the menu...")
 
     def handle_anime_selection_with_lazy_load(self, results, load_more_callback):
         while True:
@@ -938,7 +1050,7 @@ class AniCliArApp:
                     return "download"
                 return None
             else:
-                player_type = self.settings.get('player')
+                player_type = 'mpv' if self.watch_host else self.settings.get('player')
                 
                 from rich.text import Text
                 from rich.panel import Panel
@@ -970,7 +1082,14 @@ class AniCliArApp:
                 
                 monitor.track_video_play(selected_anime.title_en, str(selected_ep.display_num))
                 
-                self.player.play(direct_url, f"{selected_anime.title_en} - Ep {selected_ep.display_num} ({quality.name})", player_type=player_type)
+                ipc_socket = None
+                if self.watch_host is not None:
+                    ipc_socket = self.watch_host.socket_path
+                    self.watch_host.notify_load(selected_anime.title_en, selected_ep.display_num, "Arabic Sub")
+                
+                self.player.play(direct_url, f"{selected_anime.title_en} - Ep {selected_ep.display_num} ({quality.name})", player_type=player_type, ipc_socket=ipc_socket)
+                if self.watch_host is not None:
+                    self.watch_host.notify_stop()
                 self.ui.clear()
                 self.history.mark_watched(selected_anime.id, selected_ep.display_num, selected_anime.title_en)
                 self.rpc.update_selecting_episode(selected_anime.title_en, selected_anime.thumbnail)
@@ -1040,7 +1159,7 @@ class AniCliArApp:
             return None
 
         direct_url, stream_headers = url_and_headers
-        player_type = self.settings.get('player')
+        player_type = 'mpv' if self.watch_host else self.settings.get('player')
         suffix = " [English Dub]" if dub else " [English Sub]"
 
         watching_text = Text()
@@ -1067,7 +1186,18 @@ class AniCliArApp:
         self.rpc.update_watching(selected_anime.title_en, str(selected_ep.display_num), selected_anime.thumbnail)
         monitor.track_video_play(selected_anime.title_en, str(selected_ep.display_num))
 
-        self.player.play(direct_url, f"{selected_anime.title_en} - Ep {selected_ep.display_num}", player_type=player_type, headers=stream_headers)
+        ipc_socket = None
+        if self.watch_host is not None:
+            ipc_socket = self.watch_host.socket_path
+            self.watch_host.notify_load(
+                selected_anime.title_en,
+                selected_ep.display_num,
+                "English Dub" if dub else "English Sub",
+            )
+
+        self.player.play(direct_url, f"{selected_anime.title_en} - Ep {selected_ep.display_num}", player_type=player_type, headers=stream_headers, ipc_socket=ipc_socket)
+        if self.watch_host is not None:
+            self.watch_host.notify_stop()
         self.ui.clear()
         self.history.mark_watched(selected_anime.id, selected_ep.display_num, selected_anime.title_en)
         self.rpc.update_selecting_episode(selected_anime.title_en, selected_anime.thumbnail)
@@ -1115,6 +1245,17 @@ class AniCliArApp:
             self.player.cleanup_temp_mpv()
         except Exception:
             pass
+        
+        if self.watch_host is not None:
+            try:
+                self.watch_host.stop()
+            except Exception:
+                pass
+        if self.watch_guest is not None:
+            try:
+                self.watch_guest.stop()
+            except Exception:
+                pass
         
         # Only show TUI goodbye if we are NOT in CLI mode
         if self.current_mode != "cli":

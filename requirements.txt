@@ -9,6 +9,9 @@ yt-dlp                # Extract anime trailers from YouTube
 Pillow>=10.0.0        # Image processing for anime posters
 numpy>=1.24.0         # Array operations for image display
 
+# Watch Together (Supabase Realtime)
+supabase>=2.0.0
+
 # External tools (auto-installed by deps.py):
 # - mpv: Media player for streaming episodes
 # - ffmpeg: Multimedia framework (helper for mpv)

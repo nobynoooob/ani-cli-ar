@@ -110,7 +110,7 @@ class PlayerManager:
 
         return players
 
-    def play(self, url: str, title: str, player_type: str = 'ask', headers: Optional[dict] = None):
+    def play(self, url: str, title: str, player_type: str = 'ask', headers: Optional[dict] = None, ipc_socket: Optional[str] = None):
         if not url:
             msg = "Error: Extracted stream URL is invalid or empty."
             if self.console:
@@ -197,7 +197,7 @@ class PlayerManager:
             if selected_player == 'VLC':
                 self._play_vlc(url, title, available_players['VLC'], headers)
             elif selected_player == 'MPV':
-                self._play_mpv(url, title, available_players['MPV'], headers)
+                self._play_mpv(url, title, available_players['MPV'], headers, ipc_socket=ipc_socket)
             elif selected_player == 'MPC-HC':
                 self._play_mpc(url, title, available_players['MPC-HC'], headers)
         except Exception as e:
@@ -257,7 +257,7 @@ class PlayerManager:
                 print(detail, file=sys.stderr)
                 input("Press Enter to continue...")
 
-    def _play_mpv(self, url: str, title: str, mpv_path: str = None, headers: dict = None):
+    def _play_mpv(self, url: str, title: str, mpv_path: str = None, headers: dict = None, ipc_socket: Optional[str] = None):
         if not mpv_path:
             mpv_path = self.get_available_players().get('MPV')
 
@@ -282,6 +282,8 @@ class PlayerManager:
             '--force-media-title=' + title,
             '--force-window=yes',
         ]
+        if ipc_socket:
+            mpv_args.append('--input-ipc-server=' + ipc_socket)
         if headers:
             ref = headers.get('Referer')
             if ref:
