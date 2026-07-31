@@ -1,5 +1,6 @@
 """Watch Together room sync via Supabase Realtime Broadcast + mpv IPC."""
 
+import asyncio
 import json
 import os
 import platform
@@ -42,40 +43,165 @@ def _supabase_credentials() -> Tuple[str, str]:
 
 class SupabaseRealtime:
     def __init__(self):
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._thread: Optional[threading.Thread] = None
         self._client = None
+        self._channels: Dict[str, Any] = {}
+        self._ready = threading.Event()
+        self._stop_evt: Optional[asyncio.Event] = None
 
     def connect(self) -> bool:
-        if self._client is not None:
+        if self._loop is not None:
             return True
         try:
-            from supabase import create_client
+            from supabase import create_async_client
         except ImportError:
             return False
         url, key = _supabase_credentials()
         if not url or not key:
             return False
+        self._loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(
+            target=self._run, args=(url, key), daemon=True
+        )
+        self._thread.start()
+        if not self._ready.wait(timeout=15.0):
+            self.close()
+            return False
+        return self._client is not None
+
+    def _run(self, url: str, key: str):
+        asyncio.set_event_loop(self._loop)
         try:
-            self._client = create_client(url, key)
-            return True
+            self._loop.run_until_complete(self._async_main(url, key))
+        finally:
+            if self._loop is not None:
+                try:
+                    self._loop.close()
+                except Exception:
+                    pass
+            self._loop = None
+
+    async def _async_main(self, url: str, key: str):
+        try:
+            from supabase import create_async_client
+            client = await create_async_client(url, key)
         except Exception:
             self._client = None
-            return False
+            self._ready.set()
+            return
+        self._client = client
+        self._stop_evt = asyncio.Event()
+        self._ready.set()
+        try:
+            await self._stop_evt.wait()
+        finally:
+            self._client = None
+            for ch in list(self._channels.values()):
+                try:
+                    await ch.unsubscribe()
+                except Exception:
+                    pass
+            self._channels.clear()
+            try:
+                await client.realtime.close()
+            except Exception:
+                pass
+
+    def _submit(self, coro, timeout: float = 15.0):
+        if self._loop is None:
+            return None
+        fut = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        try:
+            return fut.result(timeout)
+        except Exception:
+            return None
 
     def channel(self, code: str):
         if self._client is None:
             return None
-        try:
-            return self._client.channel(f"room:{code}")
-        except Exception:
-            return None
+        return _RealtimeChannel(self, code)
 
-    def close(self):
-        if self._client is not None:
+    async def _subscribe(self, code: str, callback: Optional[Callable[[dict], None]]):
+        if self._client is None:
+            return False
+        try:
+            channel = self._client.channel(f"room:{code}")
+        except Exception:
+            return False
+        self._channels[code] = channel
+
+        def make_handler():
+            def handler(payload: dict):
+                try:
+                    if callback is not None:
+                        threading.Thread(
+                            target=callback, args=(payload,), daemon=True
+                        ).start()
+                except Exception:
+                    pass
+            return handler
+
+        for evt in (EV_LOAD, EV_PLAY, EV_PAUSE, EV_SEEK, EV_HEARTBEAT):
             try:
-                self._client.remove_all_channels()
+                channel.on_broadcast(event=evt, callback=make_handler())
             except Exception:
                 pass
-            self._client = None
+        try:
+            await channel.subscribe()
+        except Exception:
+            return False
+        return True
+
+    async def _send(self, code: str, event: str, payload: dict):
+        ch = self._channels.get(code)
+        if ch is None:
+            return False
+        try:
+            await ch.send_broadcast(event, payload)
+            return True
+        except Exception:
+            return False
+
+    async def _unsubscribe(self, code: str):
+        ch = self._channels.pop(code, None)
+        if ch is None:
+            return False
+        try:
+            await ch.unsubscribe()
+            return True
+        except Exception:
+            return False
+
+    def close(self):
+        if self._loop is not None and self._stop_evt is not None:
+            try:
+                self._loop.call_soon_threadsafe(self._stop_evt.set)
+            except Exception:
+                pass
+            if self._thread is not None:
+                self._thread.join(timeout=5.0)
+        self._client = None
+
+
+class _RealtimeChannel:
+    def __init__(self, rt: SupabaseRealtime, code: str):
+        self._rt = rt
+        self._code = code
+        self._callback: Optional[Callable[[dict], None]] = None
+
+    def on_broadcast(self, event: str, callback: Callable[[dict], None]):
+        self._callback = callback
+        return self
+
+    def subscribe(self) -> bool:
+        return bool(self._rt._submit(self._rt._subscribe(self._code, self._callback)))
+
+    def send_broadcast(self, event: str, payload: dict) -> bool:
+        return bool(self._rt._submit(self._rt._send(self._code, event, payload)))
+
+    def unsubscribe(self) -> bool:
+        return bool(self._rt._submit(self._rt._unsubscribe(self._code)))
 
 
 class MpvIpcClient:
@@ -222,13 +348,7 @@ class WatchHost:
         if self._channel is None:
             return
         try:
-            self._channel.send(
-                {
-                    "type": "broadcast",
-                    "event": event,
-                    "payload": payload,
-                }
-            )
+            self._channel.send_broadcast(event, payload)
         except Exception:
             pass
 
