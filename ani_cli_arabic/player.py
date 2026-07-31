@@ -7,11 +7,83 @@ import tempfile
 from typing import Optional
 from .utils import is_bundled
 
+_GUEST_VOLUME_BINDINGS = (
+    "VOLUME_UP add volume 5",
+    "VOLUME_DOWN add volume -5",
+    "MUTE cycle mute",
+    "9 add volume 5",
+    "0 add volume -5",
+    "MOUSE_BTN_WHEEL_UP add volume 5",
+    "MOUSE_BTN_WHEEL_DOWN add volume -5",
+)
+
 class PlayerManager:
     def __init__(self, rpc_manager=None, console=None):
         self.temp_mpv_path = None
         self.rpc_manager = rpc_manager
         self.console = console
+        self.guest_input_conf_path = None
+
+    def build_mpv_args(
+        self,
+        mpv_path: str,
+        url: str,
+        title: str = "",
+        headers: Optional[dict] = None,
+        ipc_socket: Optional[str] = None,
+        lock_controls: bool = False,
+    ) -> list:
+        """Build mpv arguments. With lock_controls, all default keybindings are
+        disabled so guests cannot pause/seek manually; volume-only keys are bound
+        via a generated input.conf."""
+        mpv_args = [
+            mpv_path,
+            '--fullscreen',
+            '--keep-open=yes',
+            '--cache=yes',
+            '--demuxer-max-bytes=150M',
+            '--demuxer-max-back-bytes=64M',
+            '--demuxer-readahead-secs=20',
+            '--hwdec=auto-safe',
+            '--sub-auto=fuzzy',
+            '--force-window=yes',
+        ]
+        if title:
+            mpv_args.append('--force-media-title=' + title)
+        if ipc_socket:
+            mpv_args.append('--input-ipc-server=' + ipc_socket)
+        if lock_controls:
+            mpv_args.append('--no-input-default-bindings')
+            conf = self._create_guest_input_conf()
+            if conf:
+                mpv_args.append('--input-conf=' + conf)
+        if headers:
+            ref = headers.get('Referer')
+            if ref:
+                mpv_args += ['--http-header-fields=Referer: ' + ref]
+            ua = headers.get('User-Agent')
+            if ua:
+                mpv_args += ['--user-agent=' + ua]
+        mpv_args.append(url)
+        return mpv_args
+
+    def _create_guest_input_conf(self) -> Optional[str]:
+        try:
+            fd, path = tempfile.mkstemp(prefix='ani_cli_guest_input_', suffix='.conf')
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                f.write("\n".join(_GUEST_VOLUME_BINDINGS) + "\n")
+            self.guest_input_conf_path = path
+            return path
+        except (OSError, IOError):
+            return None
+
+    def cleanup_guest_input_conf(self):
+        if self.guest_input_conf_path:
+            try:
+                os.unlink(self.guest_input_conf_path)
+            except OSError:
+                pass
+            self.guest_input_conf_path = None
 
     def get_mpv_path(self) -> Optional[str]:
         if is_bundled():
@@ -269,29 +341,9 @@ class PlayerManager:
 
         url = url.strip().strip('"').strip("'")
 
-        mpv_args = [
-            mpv_path,
-            '--fullscreen',
-            '--keep-open=yes',
-            '--cache=yes',
-            '--demuxer-max-bytes=150M',
-            '--demuxer-max-back-bytes=64M',
-            '--demuxer-readahead-secs=20',
-            '--hwdec=auto-safe',
-            '--sub-auto=fuzzy',
-            '--force-media-title=' + title,
-            '--force-window=yes',
-        ]
-        if ipc_socket:
-            mpv_args.append('--input-ipc-server=' + ipc_socket)
-        if headers:
-            ref = headers.get('Referer')
-            if ref:
-                mpv_args += ['--http-header-fields=Referer: ' + ref]
-            ua = headers.get('User-Agent')
-            if ua:
-                mpv_args += ['--user-agent=' + ua]
-        mpv_args.append(url)
+        mpv_args = self.build_mpv_args(
+            mpv_path, url, title=title, headers=headers, ipc_socket=ipc_socket
+        )
 
         if self.console:
             from rich.text import Text

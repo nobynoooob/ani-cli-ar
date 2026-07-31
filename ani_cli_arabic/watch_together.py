@@ -10,6 +10,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from .config import SUPABASE_DEFAULT_KEY, SUPABASE_DEFAULT_URL
@@ -17,7 +18,7 @@ from .player import PlayerManager
 
 ROOM_CODE_LEN = 6
 HEARTBEAT_INTERVAL = 3.0
-DRIFT_THRESHOLD = 3.0
+DRIFT_THRESHOLD = 1.5
 SEEK_BACKWARD_TOLERANCE = 2.0
 SEEK_FORWARD_TOLERANCE = 8.0
 POLL_INTERVAL = 0.5
@@ -33,6 +34,14 @@ def _socket_path(code: str) -> str:
     if platform.system() == "Windows":
         return f"\\\\.\\pipe\\ani-cli-watch-{code}"
     return f"/tmp/ani-cli-watch-{code}.sock"
+
+
+def _unique_socket_path(code: str) -> str:
+    """Local mpv IPC socket path. The room code alone would collide when a
+    host and a guest run on the same machine (they both derive the path from
+    the shared room code), so append a random suffix. Never transmitted to
+    peers - purely local."""
+    return _socket_path(f"{code}-{uuid.uuid4().hex[:8]}")
 
 
 def _supabase_credentials() -> Tuple[str, str]:
@@ -320,7 +329,7 @@ def _loadfile_command(url: str, headers: Optional[Dict[str, str]]) -> list:
 class WatchHost:
     def __init__(self):
         self.code = "".join(str(random.randint(0, 9)) for _ in range(ROOM_CODE_LEN))
-        self.socket_path = _socket_path(self.code)
+        self.socket_path = _unique_socket_path(self.code)
         self._rt = SupabaseRealtime()
         self._channel = None
         self._stop = threading.Event()
@@ -418,7 +427,7 @@ class WatchHost:
 class WatchGuest:
     def __init__(self, code: str):
         self.code = code
-        self.socket_path = _socket_path(code)
+        self.socket_path = _unique_socket_path(code)
         self._rt = SupabaseRealtime()
         self._channel = None
         self._stop = threading.Event()
@@ -541,25 +550,13 @@ class WatchGuest:
 
     def _launch_mpv(self, url: str, headers: Dict[str, str]):
         mpv_path = self._player.get_mpv_path()
-        args = [
+        args = self._player.build_mpv_args(
             mpv_path,
-            "--fullscreen",
-            "--keep-open=yes",
-            "--cache=yes",
-            "--demuxer-max-bytes=150M",
-            "--demuxer-readahead-secs=20",
-            "--hwdec=auto-safe",
-            "--force-window=yes",
-            f"--input-ipc-server={self.socket_path}",
-        ]
-        if headers:
-            ref = headers.get("Referer")
-            if ref:
-                args.append(f"--http-header-fields=Referer: {ref}")
-            ua = headers.get("User-Agent")
-            if ua:
-                args.append(f"--user-agent={ua}")
-        args.append(url)
+            url,
+            headers=headers,
+            ipc_socket=self.socket_path,
+            lock_controls=True,
+        )
         if self._mpv_proc is not None:
             try:
                 self._mpv_proc.kill()
@@ -586,6 +583,7 @@ class WatchGuest:
         if self._mpv_proc is proc:
             self._ipc.close()
             self._mpv_proc = None
+        self._player.cleanup_guest_input_conf()
 
     def _apply_pending(self):
         if not self._ipc.connect(timeout=20.0):
@@ -632,8 +630,8 @@ class WatchGuest:
         self._last_host_time = float(host_time)
         if not self._ipc.connected:
             return
-        if not playing:
-            return
+        if playing is False:
+            self._ipc.set_pause(True)
         guest_time = self._ipc.get_time_pos()
         if guest_time is None:
             return
@@ -649,6 +647,7 @@ class WatchGuest:
             except Exception:
                 pass
         self._ipc.close()
+        self._player.cleanup_guest_input_conf()
         if self._channel is not None:
             try:
                 self._channel.unsubscribe()
