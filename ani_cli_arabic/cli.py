@@ -581,6 +581,11 @@ def run_simple_cli(query=None, deps=None):
 
 def main():
     """Entry point for running the CLI directly: python -m ani_cli_arabic.cli"""
+    if "--stats" in sys.argv:
+        from ani_cli_arabic.stats import render_stats
+        render_stats()
+        return
+
     from ani_cli_arabic.api import AnimeAPI
     from ani_cli_arabic.player import PlayerManager
     from ani_cli_arabic.history import HistoryManager

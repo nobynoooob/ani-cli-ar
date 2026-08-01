@@ -29,3 +29,18 @@ CREATE POLICY insert_usage_logs_authenticated
     FOR INSERT
     TO authenticated
     WITH CHECK (true);
+
+-- Allow reading playback rows scoped to the x-fingerprint request header so the
+-- /stats endpoint works with the anon key. Clients can only see rows whose
+-- fingerprint matches the header they send; with a service-role key RLS is
+-- bypassed entirely.
+CREATE POLICY select_usage_logs_scoped
+    ON public.usage_logs
+    FOR SELECT
+    TO anon, authenticated
+    USING (
+        fingerprint = NULLIF(
+            current_setting('request.headers', true)::json->>'x-fingerprint',
+            ''
+        )
+    );

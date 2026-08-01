@@ -55,10 +55,17 @@ class AniCliArApp:
         parser.add_argument('--dub', action='store_true', help="Override: use English Dubbed streams")
         parser.add_argument('--provider', type=str, default=None,
                             help="Preferred English stream provider (overrides auto-fallback)")
+        parser.add_argument('--stats', action='store_true',
+                            help="Show streaming history summary from telemetry/local history and exit")
         parser.add_argument('query', nargs='*', help="Anime name to search for")
         
         args = parser.parse_args()
-        
+
+        if args.stats:
+            from .stats import render_stats
+            render_stats()
+            sys.exit(0)
+
         if args.version:
             from .version import __version__
             print(f"ani-cli-arabic v{__version__}")

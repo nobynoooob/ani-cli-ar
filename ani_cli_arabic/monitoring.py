@@ -1,6 +1,7 @@
 import platform
 import hashlib
 import threading
+from typing import Optional
 import requests
 from datetime import datetime, timezone
 from .api import _get_analytics_endpoint_config
@@ -98,6 +99,41 @@ class MonitoringSystem:
                 if value is not None:
                     details[key] = value
         self._send_data("error", details)
+
+    def fetch_stats(self, limit: int = 500) -> Optional[dict]:
+        """Fetch aggregated streaming history from the remote telemetry endpoint.
+
+        Returns None if analytics are disabled, the endpoint is unreachable, or
+        no playback data is available for this device.
+        """
+        try:
+            from .settings import SettingsManager
+            settings = SettingsManager()
+            if not settings.get('analytics'):
+                return None
+        except Exception:
+            return None
+
+        try:
+            endpoint_url, auth_secret = _get_analytics_endpoint_config()
+
+            headers = {
+                'X-Auth-Key': auth_secret,
+                'User-Agent': 'AniCliAr-Monitor/1.0'
+            }
+
+            resp = requests.get(
+                f"{endpoint_url}/stats",
+                params={"fingerprint": self.user_fingerprint, "limit": limit},
+                headers=headers,
+                timeout=8,
+            )
+            if resp.status_code != 200:
+                return None
+            data = resp.json()
+            return data if isinstance(data, dict) else None
+        except Exception:
+            return None
 
 # Global instance
 monitor = MonitoringSystem()
