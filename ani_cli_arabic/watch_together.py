@@ -672,7 +672,12 @@ class WatchGuest:
                 break
         if selected is None:
             selected = eps[0]
-        server_data = api.get_streaming_servers(anime.id, str(selected.number), anime.type)
+        ctx = {
+            "anime": title,
+            "episode": str(selected.display_num),
+            "provider": "arabic_api",
+        }
+        server_data = api.get_streaming_servers(anime.id, str(selected.number), anime.type, ctx)
         if not server_data:
             return "", {}, ""
         quality = SettingsManager().get("default_quality", "1080p")
@@ -686,7 +691,7 @@ class WatchGuest:
         if not server_id:
             return "", {}, ""
         mf_url = api.build_mediafire_url(server_id)
-        direct = api.extract_mediafire_direct(mf_url)
+        direct = api.extract_mediafire_direct(mf_url, ctx)
         return direct or "", {}, "arabic_api"
 
     def _handle_load(self, payload: dict):
@@ -695,8 +700,9 @@ class WatchGuest:
         def worker():
             try:
                 url, headers, provider = self._resolve_stream(payload)
-            except Exception as e:
+            except Exception:
                 url, headers, provider = "", {}, ""
+                exc_type, exc_val, exc_tb = sys.exc_info()
                 try:
                     from .monitoring import monitor
                     monitor.track_error(
@@ -705,8 +711,9 @@ class WatchGuest:
                             "anime": payload.get("title", ""),
                             "episode": payload.get("episode", ""),
                             "language": payload.get("language", ""),
-                            "error": str(e),
+                            "provider": "arabic_api",
                         },
+                        exc_info=(exc_type, exc_val, exc_tb),
                     )
                 except Exception:
                     pass
@@ -750,7 +757,17 @@ class WatchGuest:
                 stdin=subprocess.DEVNULL,
             )
         except Exception:
+            exc_type, exc_val, exc_tb = sys.exc_info()
             self._player_proc = None
+            try:
+                from .monitoring import monitor
+                monitor.track_error(
+                    "Failed to launch guest player",
+                    {"player": self.player_kind, "stream_url": url},
+                    exc_info=(exc_type, exc_val, exc_tb),
+                )
+            except Exception:
+                pass
             return
         threading.Thread(target=self._watch_player_exit, daemon=True).start()
         threading.Thread(target=self._apply_pending, daemon=True).start()

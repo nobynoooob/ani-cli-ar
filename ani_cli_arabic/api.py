@@ -284,7 +284,24 @@ class AnimeAPI:
         except (requests.RequestException, ValueError, TypeError):
             return []
 
-    def get_streaming_servers(self, anime_id: str, episode_num: str, anime_type: str = 'SERIES') -> Optional[Dict]:
+    def _report_api_error(self, error_msg: str, context: dict = None,
+                          exception: BaseException = None, url: str = ""):
+        """Report an Arabic-API failure to telemetry without blocking the caller."""
+        try:
+            import sys as _sys
+            from .monitoring import monitor
+            details = dict(context or {})
+            if url:
+                details["server_url"] = url
+            if exception is not None:
+                monitor.track_error(error_msg, details, exception=exception)
+            else:
+                monitor.track_error(error_msg, details, exc_info=_sys.exc_info())
+        except Exception:
+            pass
+
+    def get_streaming_servers(self, anime_id: str, episode_num: str, anime_type: str = 'SERIES',
+                              context: dict = None) -> Optional[Dict]:
         endpoint = get_api_base() + "anime/load_servers.php"
         payload = {
             'UserId': '0',
@@ -298,10 +315,12 @@ class AnimeAPI:
             response = requests.post(endpoint, data=payload, timeout=10)
             response.raise_for_status()
             return response.json()
-        except (requests.RequestException, ValueError, TypeError):
+        except (requests.RequestException, ValueError, TypeError) as e:
+            self._report_api_error("Arabic server list request failed", context,
+                                   exception=e, url=endpoint)
             return None
 
-    def extract_mediafire_direct(self, mf_url: str) -> Optional[str]:
+    def extract_mediafire_direct(self, mf_url: str, context: dict = None) -> Optional[str]:
         try:
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
@@ -309,8 +328,13 @@ class AnimeAPI:
             response = requests.get(mf_url, headers=headers, timeout=10)
             response.raise_for_status()
             match = re.search(r'(https://download[^"]+)', response.text)
+            if not match:
+                self._report_api_error("MediaFire page did not contain a download link",
+                                       context, url=mf_url)
             return match.group(1) if match else None
-        except (requests.RequestException, AttributeError):
+        except (requests.RequestException, AttributeError) as e:
+            self._report_api_error("MediaFire direct link extraction failed", context,
+                                   exception=e, url=mf_url)
             return None
 
     def build_mediafire_url(self, server_id: str) -> str:

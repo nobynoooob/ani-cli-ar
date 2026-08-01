@@ -1,11 +1,16 @@
 import platform
 import hashlib
+import sys
 import threading
+import traceback as _traceback
 from typing import Optional
+from urllib.parse import urlsplit
 import requests
 from datetime import datetime, timezone
 from .api import _get_analytics_endpoint_config
 from .config import CURRENT_VERSION
+
+_MAX_TRACEBACK_LINES = 6
 
 class MonitoringSystem:
     _instance = None
@@ -92,12 +97,75 @@ class MonitoringSystem:
             "quality": quality or ""
         })
 
-    def track_error(self, error_msg: str, context: dict = None):
-        details = {"error_msg": error_msg or ""}
+    @staticmethod
+    def _host_of(url) -> str:
+        try:
+            return urlsplit(str(url)).hostname or str(url)
+        except Exception:
+            return str(url)
+
+    @staticmethod
+    def _truncate_traceback(formatted) -> str:
+        try:
+            joined = "".join(formatted).rstrip()
+        except Exception:
+            return str(formatted)
+        lines = joined.splitlines()
+        if len(lines) > _MAX_TRACEBACK_LINES:
+            return "\n".join(lines[-_MAX_TRACEBACK_LINES:])
+        return joined
+
+    def track_error(self, error_msg: str = "", context: dict = None,
+                    exception: BaseException = None, exc_info: tuple = None):
+        """Report a diagnostic error event.
+
+        All extraction is local and cheap; the network send happens on a
+        background thread and fails silently when offline.
+        """
+        details: dict = {}
+
+        exc_type = exc_val = exc_tb = None
+        if exception is not None:
+            exc_type = type(exception)
+            exc_val = exception
+            if getattr(exception, "__traceback__", None) is not None:
+                exc_tb = exception.__traceback__
+        elif exc_info is not None and isinstance(exc_info, tuple) and exc_info[0] is not None:
+            exc_type, exc_val, exc_tb = exc_info
+
+        if exc_type is not None:
+            details["exception_type"] = getattr(exc_type, "__name__", str(exc_type))
+            details["error_msg"] = error_msg or str(exc_val) or ""
+            if exc_tb is not None:
+                try:
+                    formatted = _traceback.format_exception(exc_type, exc_val, exc_tb)
+                except Exception:
+                    formatted = None
+                if formatted:
+                    details["traceback"] = self._truncate_traceback(formatted)
+        else:
+            details["error_msg"] = error_msg or ""
+
         if isinstance(context, dict):
             for key, value in context.items():
-                if value is not None:
+                if value is not None and str(value) != "":
                     details[key] = value
+
+        if exc_val is not None:
+            if details.get("http_status") is None:
+                status = getattr(exc_val, "status_code", None)
+                if status is None and getattr(exc_val, "response", None) is not None:
+                    status = exc_val.response.status_code
+                if status:
+                    details["http_status"] = int(status)
+
+            if not details.get("server_url") and not details.get("stream_url"):
+                url = getattr(exc_val, "url", None)
+                if url is None and getattr(exc_val, "request", None) is not None:
+                    url = exc_val.request.url
+                if url:
+                    details["server_url"] = self._host_of(url)
+
         self._send_data("error", details)
 
     def fetch_stats(self, limit: int = 500) -> Optional[dict]:

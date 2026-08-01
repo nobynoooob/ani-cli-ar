@@ -819,7 +819,10 @@ class AniCliArApp:
                         self.api.get_streaming_servers,
                         selected_anime.id,
                         selected_ep.number,
-                        selected_anime.type
+                        selected_anime.type,
+                        {"anime": selected_anime.title_en,
+                         "episode": str(selected_ep.display_num),
+                         "provider": "arabic_api"}
                     )
 
                     if not server_data:
@@ -898,10 +901,13 @@ class AniCliArApp:
             url, headers, used_provider = asyncio.run(
                 pm.resolve_stream(anime_title, episode_num, mode=mode, language="english", provider=provider)
             )
-        except Exception as e:
+        except Exception:
+            exc_type, exc_val, exc_tb = sys.exc_info()
             monitor.track_error(
                 "English stream resolution failed",
-                {"anime": anime_title, "episode": str(episode_num), "provider": provider or "auto", "error": str(e)}
+                {"anime": anime_title, "episode": str(episode_num), "provider": provider or "auto",
+                 "mode": mode},
+                exc_info=(exc_type, exc_val, exc_tb),
             )
             return "", {}, ""
         return url, headers, used_provider or ""
@@ -926,16 +932,20 @@ class AniCliArApp:
         return None
 
     def resolve_default_download_target(self, selected_anime, selected_ep, show_loading=False):
+        _ctx = {"anime": selected_anime.title_en,
+                "episode": str(selected_ep.display_num),
+                "provider": "arabic_api"}
         if show_loading:
             server_data = self.ui.run_with_loading(
                 "Loading servers...",
                 self.api.get_streaming_servers,
                 selected_anime.id,
                 selected_ep.number,
-                selected_anime.type
+                selected_anime.type,
+                _ctx
             )
         else:
-            server_data = self.api.get_streaming_servers(selected_anime.id, selected_ep.number, selected_anime.type)
+            server_data = self.api.get_streaming_servers(selected_anime.id, selected_ep.number, selected_anime.type, _ctx)
 
         if not server_data:
             return None, None, "No servers found for this episode."
@@ -954,10 +964,11 @@ class AniCliArApp:
             direct_url = self.ui.run_with_loading(
                 "Extracting direct link...",
                 self.api.extract_mediafire_direct,
-                mediafire_url
+                mediafire_url,
+                _ctx
             )
         else:
-            direct_url = self.api.extract_mediafire_direct(mediafire_url)
+            direct_url = self.api.extract_mediafire_direct(mediafire_url, _ctx)
 
         if not direct_url:
             return None, None, "Failed to extract direct link from MediaFire."
@@ -1073,7 +1084,10 @@ class AniCliArApp:
         direct_url = self.ui.run_with_loading(
             "Extracting direct link...",
             self.api.extract_mediafire_direct,
-            self.api.build_mediafire_url(server_id)
+            self.api.build_mediafire_url(server_id),
+            {"anime": selected_anime.title_en,
+             "episode": str(selected_ep.display_num),
+             "provider": "arabic_api"}
         )
         
         if direct_url:
@@ -1154,6 +1168,8 @@ class AniCliArApp:
                     "anime": selected_anime.title_en,
                     "episode": str(selected_ep.display_num),
                     "language": "Arabic",
+                    "provider": "arabic_api",
+                    "server_url": "www.mediafire.com",
                 },
             )
             self.ui.render_message(
@@ -1217,7 +1233,8 @@ class AniCliArApp:
                 {
                     "anime": selected_anime.title_en,
                     "episode": str(selected_ep.display_num),
-                    "provider": label,
+                    "provider": provider_choice or "auto",
+                    "quality": quality_name,
                     "dub": dub,
                 },
             )
