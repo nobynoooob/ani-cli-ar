@@ -47,6 +47,7 @@ class PlayerManager:
             '--hwdec=auto-safe',
             '--sub-auto=fuzzy',
             '--force-window=yes',
+            '--hls-bitrate=max',
         ]
         if title:
             mpv_args.append('--force-media-title=' + title)

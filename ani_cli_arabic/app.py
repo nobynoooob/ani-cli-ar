@@ -50,6 +50,8 @@ class AniCliArApp:
             formatter_class=argparse.RawTextHelpFormatter
         )
         parser.add_argument('-U', '--update', action='store_true', help="Self-update from PyPI via pip")
+        parser.add_argument('-t', '--test', action='store_true',
+                            help="With -U/--update: include pre-release (beta) builds via pip --pre")
         parser.add_argument('-i', '--interactive', action='store_true', help="Force minimal interactive CLI mode")
         parser.add_argument('-v', '--version', action='store_true', help="Show version information")
         parser.add_argument('--sub', action='store_true', help="Override: use English Subtitled streams")
@@ -98,9 +100,11 @@ class AniCliArApp:
 
             pip_cmd = [
                 sys.executable, "-m", "pip", "install",
-                "--upgrade", "ani-cli-ar",
-                "--break-system-packages",
+                "--upgrade",
             ]
+            if args.test:
+                pip_cmd.append("--pre")
+            pip_cmd += ["ani-cli-ar", "--break-system-packages"]
             result = subprocess.run(pip_cmd, capture_output=True, text=True)
             if result.returncode == 0:
                 print("Successfully updated ani-cli-ar!")

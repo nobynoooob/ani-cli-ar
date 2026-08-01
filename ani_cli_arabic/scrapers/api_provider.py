@@ -3,7 +3,7 @@ from typing import Dict, List, Optional, Tuple
 
 import httpx
 
-from .base import BaseScraper
+from .base import BaseScraper, quality_rank
 
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) "
@@ -133,7 +133,10 @@ class ApiScraper(BaseScraper):
             sources = data.get("sources", [])
             if not sources:
                 return {"stream_url": None, "headers": {}}
-            url = sources[0].get("url", "")
+            sources = sorted(
+                sources, key=lambda s: quality_rank(s.get("quality")), reverse=True
+            )
+            url = next((s.get("url", "") for s in sources if s.get("url")), "")
             if not url:
                 return {"stream_url": None, "headers": {}}
             return {

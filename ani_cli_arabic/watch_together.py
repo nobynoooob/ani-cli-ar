@@ -18,7 +18,11 @@ from .player import PlayerManager
 
 ROOM_CODE_LEN = 6
 HEARTBEAT_INTERVAL = 3.0
-DRIFT_THRESHOLD = 1.5
+SYNC_OK_BAND = 0.1
+DRIFT_THRESHOLD = 0.25
+HARD_SEEK_THRESHOLD = 2.0
+SPEED_UP_FACTOR = 1.05
+SPEED_DOWN_FACTOR = 0.95
 SEEK_BACKWARD_TOLERANCE = 2.0
 SEEK_FORWARD_TOLERANCE = 8.0
 POLL_INTERVAL = 0.5
@@ -313,6 +317,9 @@ class MpvIpcClient:
     def seek(self, seconds: float):
         self.send_command(["set_property", "time-pos", float(seconds)])
 
+    def set_speed(self, rate: float):
+        self.send_command(["set_property", "speed", float(rate)])
+
 
 def _pick_free_port() -> int:
     """Pick an available TCP port for the VLC rc interface."""
@@ -458,6 +465,9 @@ class VlcIpcClient:
     def seek(self, seconds: float):
         self.request(f"seek {int(seconds)}")
 
+    def set_speed(self, rate: float):
+        self.request(f"rate {rate}")
+
 
 def _loadfile_command(url: str, headers: Optional[Dict[str, str]]) -> list:
     options: Dict[str, list] = {}
@@ -516,7 +526,6 @@ class WatchHost:
         self._current = {
             "title": title,
             "episode": str(episode_num),
-            "language": language,
         }
         self._broadcast(EV_LOAD, self._current)
         self._stop.clear()
@@ -594,6 +603,9 @@ class WatchGuest:
         self._pending = {}
         self._last_host_time: Optional[float] = None
         self._last_host_playing: Optional[bool] = None
+        self._guest_speed = 1.0
+        self._speed_lock = threading.Lock()
+        self._guest_language: Optional[str] = None
         self._player = PlayerManager()
         self._active = False
 
@@ -626,10 +638,19 @@ class WatchGuest:
         elif event == EV_HEARTBEAT:
             self._handle_heartbeat(payload)
 
+    @staticmethod
+    def _local_language() -> str:
+        from .settings import SettingsManager
+        try:
+            return str(SettingsManager().get("preferred_language", "Arabic Sub"))
+        except Exception:
+            return "Arabic Sub"
+
     def _resolve_stream(self, payload: dict) -> Tuple[str, Dict, str]:
         title = payload.get("title", "")
         episode = payload.get("episode", "1")
-        language = payload.get("language", "English Sub")
+        language = self._local_language()
+        self._guest_language = language
         mode = "dub" if language == "English Dub" else "sub"
 
         if language == "Arabic Sub":
@@ -703,7 +724,7 @@ class WatchGuest:
             except Exception:
                 url, headers, provider = "", {}, ""
                 exc_type, exc_val, exc_tb = sys.exc_info()
-                lang = str(payload.get("language", ""))
+                lang = str(getattr(self, "_guest_language", "") or self._local_language())
                 if "dub" in lang.lower():
                     mode = "dub"
                 elif "arabic" in lang.lower():
@@ -728,15 +749,18 @@ class WatchGuest:
             if not url:
                 self._pending = {}
                 return
-            self._launch_player(url, headers)
+            self._launch_player(url, headers, provider)
             self._pending = {}
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _launch_player(self, url: str, headers: Dict[str, str]):
+    def _launch_player(self, url: str, headers: Dict[str, str], provider: str = ""):
         self._watch_start = time.time()
+        self._guest_speed = 1.0
         with self._state_lock:
             self._watch_meta = dict(self._pending)
+            if provider:
+                self._watch_meta["provider"] = provider
         try:
             from .monitoring import monitor
             monitor.set_activity(
@@ -807,13 +831,18 @@ class WatchGuest:
             start = getattr(self, "_watch_start", None)
             if start is not None:
                 meta = getattr(self, "_watch_meta", {}) or {}
-                lang = str(meta.get("language", ""))
+                provider = str(meta.get("provider", "")) or (
+                    "arabic_api"
+                    if "arabic"
+                    in str(getattr(self, "_guest_language", "") or "").lower()
+                    else ""
+                )
                 from .monitoring import monitor
                 monitor.track_video_play(
                     meta.get("title", "") or "",
                     meta.get("episode", "") or "",
                     player=self.player_kind,
-                    provider="arabic_api" if "arabic" in lang.lower() else "",
+                    provider=provider,
                     watch_start=start,
                     watch_end=time.time(),
                 )
@@ -836,9 +865,23 @@ class WatchGuest:
     def _apply_pause(self, paused: bool):
         if not self._ipc.connected:
             return
+        if paused:
+            self._reset_guest_speed()
         threading.Thread(
             target=lambda: self._ipc.set_pause(bool(paused)), daemon=True
         ).start()
+
+    def _set_guest_speed(self, rate: float):
+        with self._speed_lock:
+            if abs(self._guest_speed - rate) < 1e-6:
+                return
+            if not self._ipc.connected:
+                return
+            self._ipc.set_speed(rate)
+            self._guest_speed = rate
+
+    def _reset_guest_speed(self):
+        self._set_guest_speed(1.0)
 
     def _apply_seek(self, seconds):
         if seconds is None:
@@ -867,11 +910,20 @@ class WatchGuest:
             return
         if playing is False:
             self._ipc.set_pause(True)
+            self._reset_guest_speed()
+            return
         guest_time = self._ipc.get_time_pos()
         if guest_time is None:
             return
-        if abs(guest_time - float(host_time)) > DRIFT_THRESHOLD:
-            self._ipc.seek(float(host_time))
+        drift = guest_time - float(host_time)
+        if abs(drift) <= SYNC_OK_BAND:
+            self._reset_guest_speed()
+        elif abs(drift) > DRIFT_THRESHOLD:
+            if abs(drift) > HARD_SEEK_THRESHOLD:
+                self._reset_guest_speed()
+                self._ipc.seek(float(host_time))
+            else:
+                self._set_guest_speed(SPEED_UP_FACTOR if drift < 0 else SPEED_DOWN_FACTOR)
 
     def stop(self):
         self._stop.set()

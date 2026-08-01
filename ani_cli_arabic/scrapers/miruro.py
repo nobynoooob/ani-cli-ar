@@ -7,7 +7,7 @@ from typing import Dict, List, Optional
 
 import httpx
 
-from .base import BaseScraper
+from .base import BaseScraper, quality_rank
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -262,6 +262,9 @@ class MiruroScraper(BaseScraper):
             streams = data.get("streams", [])
             if not streams:
                 return {"stream_url": None, "headers": {}}
+            streams = sorted(
+                streams, key=lambda s: quality_rank(s.get("quality")), reverse=True
+            )
             for s in streams:
                 url = s.get("url", "")
                 if url and (".m3u8" in url or ".mp4" in url):

@@ -1,5 +1,20 @@
 from abc import ABC, abstractmethod
+import re
 from typing import Dict, List, Optional
+
+
+def quality_rank(value) -> int:
+    """Rank a quality label (e.g. '1080p', '720') highest-first. Returns 0
+    when unparseable, so unknown-quality sources sort below known ones."""
+    if value is None:
+        return 0
+    m = re.search(r"(\d{3,4})", str(value))
+    if not m:
+        return 0
+    try:
+        return int(m.group(1))
+    except ValueError:
+        return 0
 
 
 class BaseScraper(ABC):
