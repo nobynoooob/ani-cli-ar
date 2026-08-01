@@ -44,6 +44,15 @@ def _unique_socket_path(code: str) -> str:
     return _socket_path(f"{code}-{uuid.uuid4().hex[:8]}")
 
 
+def _mpv_ipc_is_tcp() -> bool:
+    """True when mpv IPC must use a local TCP loopback socket instead of a
+    Unix socket. Windows Python builds may lack socket.AF_UNIX, so the IPC
+    transport falls back to AF_INET on 127.0.0.1 there."""
+    if sys.platform == "win32" and not hasattr(socket, "AF_UNIX"):
+        return True
+    return False
+
+
 def _supabase_credentials() -> Tuple[str, str]:
     url = os.environ.get("SUPABASE_URL", "") or SUPABASE_DEFAULT_URL
     key = os.environ.get("SUPABASE_KEY", "") or SUPABASE_DEFAULT_KEY
@@ -216,6 +225,7 @@ class _RealtimeChannel:
 class MpvIpcClient:
     def __init__(self, path: str):
         self.path = path
+        self._tcp_port: Optional[int] = _pick_free_port() if _mpv_ipc_is_tcp() else None
         self._sock: Optional[socket.socket] = None
         self._req_id = 0
         self._lock = threading.Lock()
@@ -225,19 +235,33 @@ class MpvIpcClient:
     def connected(self) -> bool:
         return self._sock is not None
 
+    def _connect_target(self):
+        if hasattr(socket, "AF_UNIX"):
+            return self.path
+        return ("127.0.0.1", self._tcp_port or 0)
+
     def connect(self, timeout: float = 15.0) -> bool:
         if self.connected:
             return True
         deadline = time.time() + timeout
         while time.time() < deadline:
             try:
-                sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                sock.connect(self.path)
+                if hasattr(socket, "AF_UNIX"):
+                    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                else:
+                    # Windows: socket.AF_UNIX is unavailable, so fall back to a
+                    # local TCP socket on loopback for the mpv IPC transport.
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.connect(self._connect_target())
                 sock.settimeout(2.0)
                 self._sock = sock
                 self._buf = b""
                 return True
-            except OSError:
+            except (AttributeError, OSError, ValueError):
+                try:
+                    sock.close()
+                except OSError:
+                    pass
                 time.sleep(0.3)
         return False
 
@@ -821,17 +845,20 @@ class WatchGuest:
             pass
 
     def _apply_pending(self):
-        if not self._ipc.connect(timeout=20.0):
-            return
-        with self._state_lock:
-            pending = dict(self._pending)
-        if pending:
-            t = pending.get("time")
-            if t is not None:
-                self._ipc.seek(float(t))
-            playing = pending.get("playing")
-            if playing is not None:
-                self._ipc.set_pause(not playing)
+        try:
+            if not self._ipc.connect(timeout=20.0):
+                return
+            with self._state_lock:
+                pending = dict(self._pending)
+            if pending:
+                t = pending.get("time")
+                if t is not None:
+                    self._ipc.seek(float(t))
+                playing = pending.get("playing")
+                if playing is not None:
+                    self._ipc.set_pause(not playing)
+        except (AttributeError, OSError, ConnectionError, ValueError):
+            pass
 
     def _apply_pause(self, paused: bool):
         if not self._ipc.connected:
