@@ -695,8 +695,21 @@ class WatchGuest:
         def worker():
             try:
                 url, headers, provider = self._resolve_stream(payload)
-            except Exception:
+            except Exception as e:
                 url, headers, provider = "", {}, ""
+                try:
+                    from .monitoring import monitor
+                    monitor.track_error(
+                        "Guest stream resolution failed",
+                        {
+                            "anime": payload.get("title", ""),
+                            "episode": payload.get("episode", ""),
+                            "language": payload.get("language", ""),
+                            "error": str(e),
+                        },
+                    )
+                except Exception:
+                    pass
             if not url:
                 self._pending = {}
                 return

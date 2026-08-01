@@ -69,7 +69,7 @@ class MonitoringSystem:
                     headers=headers, 
                     timeout=3
                 )
-            except (requests.RequestException, ValueError, KeyError):
+            except Exception:
                 pass
 
         thread = threading.Thread(target=worker, daemon=True)
@@ -81,12 +81,23 @@ class MonitoringSystem:
             "os": platform.system()
         })
 
-    def track_video_play(self, anime_title: str, episode: str, mode: str = "stream"):
+    def track_video_play(self, anime_title: str, episode: str, mode: str = "stream", player: str = "", provider: str = "", quality: str = ""):
         self._send_data("video_play", {
             "anime": anime_title,
             "episode": episode,
-            "mode": mode
+            "mode": mode,
+            "player": player or "",
+            "provider": provider or "",
+            "quality": quality or ""
         })
+
+    def track_error(self, error_msg: str, context: dict = None):
+        details = {"error_msg": error_msg or ""}
+        if isinstance(context, dict):
+            for key, value in context.items():
+                if value is not None:
+                    details[key] = value
+        self._send_data("error", details)
 
 # Global instance
 monitor = MonitoringSystem()

@@ -316,6 +316,7 @@ class PlayerManager:
                 self._play_mpv(url, title, available_players['MPV'], headers, ipc_socket=ipc_socket)
             elif selected_player == 'MPC-HC':
                 self._play_mpc(url, title, available_players['MPC-HC'], headers)
+            return selected_player.lower() if selected_player else None
         except Exception as e:
             if self.console:
                 from rich.text import Text
@@ -324,6 +325,7 @@ class PlayerManager:
             else:
                 print(f"Error launching player: {str(e)}", file=sys.stderr)
                 input("Press Enter to continue...")
+            return None
 
     def _play_vlc(self, url: str, title: str, vlc_path: str = None, headers: dict = None, rc_port: Optional[int] = None):
         if not vlc_path:

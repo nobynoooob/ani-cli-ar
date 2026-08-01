@@ -887,10 +887,17 @@ class AniCliArApp:
         pm = ProviderManager(preferred_provider=preferred if preferred else None)
 
         mode = "dub" if dub else "sub"
-        url, headers, _ = asyncio.run(
-            pm.resolve_stream(anime_title, episode_num, mode=mode, language="english", provider=provider)
-        )
-        return url, headers
+        try:
+            url, headers, used_provider = asyncio.run(
+                pm.resolve_stream(anime_title, episode_num, mode=mode, language="english", provider=provider)
+            )
+        except Exception as e:
+            monitor.track_error(
+                "English stream resolution failed",
+                {"anime": anime_title, "episode": str(episode_num), "provider": provider or "auto", "error": str(e)}
+            )
+            return "", {}, ""
+        return url, headers, used_provider or ""
 
     def _pick_default_download_quality_option(self, current_ep_data):
         qualities = [
@@ -1110,8 +1117,6 @@ class AniCliArApp:
                 
                 self.rpc.update_watching(selected_anime.title_en, str(selected_ep.display_num), selected_anime.thumbnail)
                 
-                monitor.track_video_play(selected_anime.title_en, str(selected_ep.display_num))
-                
                 ipc_socket = None
                 rc_port = None
                 if self.watch_host is not None:
@@ -1121,7 +1126,14 @@ class AniCliArApp:
                         ipc_socket = self.watch_host.socket_path
                     self.watch_host.notify_load(selected_anime.title_en, selected_ep.display_num, "Arabic Sub")
                 
-                self.player.play(direct_url, f"{selected_anime.title_en} - Ep {selected_ep.display_num} ({quality.name})", player_type=player_type, ipc_socket=ipc_socket, rc_port=rc_port)
+                selected_player = self.player.play(direct_url, f"{selected_anime.title_en} - Ep {selected_ep.display_num} ({quality.name})", player_type=player_type, ipc_socket=ipc_socket, rc_port=rc_port)
+                monitor.track_video_play(
+                    selected_anime.title_en,
+                    str(selected_ep.display_num),
+                    player=selected_player or player_type or "",
+                    provider="arabic_api",
+                    quality=quality_tag or "",
+                )
                 if self.watch_host is not None:
                     self.watch_host.notify_stop()
                 self.ui.clear()
@@ -1129,6 +1141,14 @@ class AniCliArApp:
                 self.rpc.update_selecting_episode(selected_anime.title_en, selected_anime.thumbnail)
                 return "watch"
         else:
+            monitor.track_error(
+                "Failed to extract direct link from MediaFire",
+                {
+                    "anime": selected_anime.title_en,
+                    "episode": str(selected_ep.display_num),
+                    "language": "Arabic",
+                },
+            )
             self.ui.render_message(
                 "✗ Error", 
                 "Failed to extract direct link from MediaFire.", 
@@ -1185,6 +1205,15 @@ class AniCliArApp:
         )
 
         if not (url_and_headers and url_and_headers[0]):
+            monitor.track_error(
+                "No working English stream found",
+                {
+                    "anime": selected_anime.title_en,
+                    "episode": str(selected_ep.display_num),
+                    "provider": label,
+                    "dub": dub,
+                },
+            )
             self.ui.render_message(
                 "Error",
                 f"No working English stream found via {label}. Please try another provider.",
@@ -1192,7 +1221,7 @@ class AniCliArApp:
             )
             return None
 
-        direct_url, stream_headers = url_and_headers
+        direct_url, stream_headers, provider_name = url_and_headers
         player_type = self.watch_host.player_kind if self.watch_host else self.settings.get('player')
         suffix = " [English Dub]" if dub else " [English Sub]"
 
@@ -1218,7 +1247,6 @@ class AniCliArApp:
         self.ui.console.print(Align.center(watching_panel, vertical="middle", height=self.ui.console.height))
 
         self.rpc.update_watching(selected_anime.title_en, str(selected_ep.display_num), selected_anime.thumbnail)
-        monitor.track_video_play(selected_anime.title_en, str(selected_ep.display_num))
 
         ipc_socket = None
         rc_port = None
@@ -1233,7 +1261,14 @@ class AniCliArApp:
                 "English Dub" if dub else "English Sub",
             )
 
-        self.player.play(direct_url, f"{selected_anime.title_en} - Ep {selected_ep.display_num}", player_type=player_type, headers=stream_headers, ipc_socket=ipc_socket, rc_port=rc_port)
+        selected_player = self.player.play(direct_url, f"{selected_anime.title_en} - Ep {selected_ep.display_num}", player_type=player_type, headers=stream_headers, ipc_socket=ipc_socket, rc_port=rc_port)
+        monitor.track_video_play(
+            selected_anime.title_en,
+            str(selected_ep.display_num),
+            player=selected_player or player_type or "",
+            provider=provider_name or "",
+            quality=quality_name or "",
+        )
         if self.watch_host is not None:
             self.watch_host.notify_stop()
         self.ui.clear()
