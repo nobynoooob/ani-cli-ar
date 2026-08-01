@@ -76,3 +76,5 @@ tmp/
 # Dev folders; used for api, github pages.
 deps
 
+.vercel
+.env*

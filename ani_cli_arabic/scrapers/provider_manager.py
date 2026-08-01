@@ -86,6 +86,7 @@ class ProviderManager:
                 "episode": str(episode_num),
                 "provider": name,
                 "mode": mode or "sub",
+                "translation_mode": (mode or "sub").lower(),
             }
             try:
                 result = await asyncio.wait_for(
@@ -142,6 +143,7 @@ class ProviderManager:
             "episode": str(episode_num),
             "provider": scraper.name,
             "mode": mode_clean,
+            "translation_mode": mode_clean,
         }
 
         try:

@@ -6,7 +6,7 @@ from setuptools import setup, find_packages
 from pathlib import Path
 
 # Read the version from version.py
-version_file = Path(__file__).parent.parent / "src" / "version.py"
+version_file = Path(__file__).parent.parent / "ani_cli_arabic" / "version.py"
 version = {}
 with open(version_file) as f:
     exec(f.read(), version)

@@ -291,6 +291,7 @@ class AnimeAPI:
             import sys as _sys
             from .monitoring import monitor
             details = dict(context or {})
+            details.setdefault("translation_mode", "arabic_sub")
             if url:
                 details["server_url"] = url
             if exception is not None:

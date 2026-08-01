@@ -1,4 +1,5 @@
 import platform
+import getpass
 import hashlib
 import sys
 import threading
@@ -6,11 +7,15 @@ import traceback as _traceback
 from typing import Optional
 from urllib.parse import urlsplit
 import requests
+import time
+import atexit
 from datetime import datetime, timezone
 from .api import _get_analytics_endpoint_config
 from .config import CURRENT_VERSION
+from .version import __version__
 
 _MAX_TRACEBACK_LINES = 6
+_HEARTBEAT_INTERVAL = 30
 
 class MonitoringSystem:
     _instance = None
@@ -26,6 +31,15 @@ class MonitoringSystem:
             return
         self._initialized = True
         self.user_fingerprint = self._generate_fingerprint()
+        self.current_activity = {
+            "status": "idle",
+            "current_anime": None,
+            "current_episode": None,
+            "watch_started_at": None,
+        }
+        self._activity_lock = threading.Lock()
+        self._session_start = None
+        self._heartbeat_started = False
 
     def _generate_fingerprint(self) -> str:
         try:
@@ -42,8 +56,13 @@ class MonitoringSystem:
         except Exception:
             return "unknown_user"
 
-    def _send_data(self, action: str, details: dict):
-        """Send analytics data only if user has opted in."""
+    def _send_data(self, action: str, details: dict, sync: bool = False):
+        """Send analytics data only if user has opted in.
+
+        System/user context (os, user_name, app_version) is attached to every
+        payload. `sync=True` sends inline (used at exit where daemon threads
+        would be killed); both paths swallow errors so telemetry never blocks.
+        """
         try:
             from .settings import SettingsManager
             settings = SettingsManager()
@@ -51,7 +70,12 @@ class MonitoringSystem:
                 return
         except Exception:
             return
-        
+
+        enriched = dict(details or {})
+        for key, value in self._system_context().items():
+            if value is not None and str(value) != "":
+                enriched.setdefault(key, value)
+
         def worker():
             try:
                 endpoint_url, auth_secret = _get_analytics_endpoint_config()
@@ -60,7 +84,7 @@ class MonitoringSystem:
                     "fingerprint": self.user_fingerprint,
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                     "action": action,
-                    "details": details
+                    "details": enriched
                 }
                 
                 headers = {
@@ -78,24 +102,110 @@ class MonitoringSystem:
             except Exception:
                 pass
 
-        thread = threading.Thread(target=worker, daemon=True)
-        thread.start()
+        if sync:
+            worker()
+        else:
+            thread = threading.Thread(target=worker, daemon=True)
+            thread.start()
 
     def track_app_start(self):
         self._send_data("app_start", {
             "version": CURRENT_VERSION,
-            "os": platform.system()
         })
 
-    def track_video_play(self, anime_title: str, episode: str, mode: str = "stream", player: str = "", provider: str = "", quality: str = ""):
-        self._send_data("video_play", {
+    def track_app_session(self):
+        """Record the app session start and report 'app_session_end' on exit."""
+        try:
+            self._session_start = time.time()
+            atexit.register(self._send_session_end)
+            self._start_heartbeat()
+        except Exception:
+            pass
+
+    def _start_heartbeat(self):
+        """Start the live 'heartbeat' reporter thread (daemon)."""
+        if self._heartbeat_started:
+            return
+        self._heartbeat_started = True
+
+        def loop():
+            while True:
+                time.sleep(_HEARTBEAT_INTERVAL)
+                try:
+                    self._send_heartbeat()
+                except Exception:
+                    pass
+
+        threading.Thread(target=loop, daemon=True).start()
+
+    def set_activity(self, status: str, anime: str = None, episode=None):
+        """Update the global current-activity state used by heartbeats.
+
+        status is "watching" or "idle". While watching, anime/episode are the
+        currently playing title and its episode identifier.
+        """
+        status = (status or "idle").lower()
+        if status not in ("idle", "watching"):
+            status = "idle"
+        with self._activity_lock:
+            self.current_activity["status"] = status
+            if status == "watching":
+                self.current_activity["current_anime"] = anime
+                self.current_activity["current_episode"] = episode
+                self.current_activity["watch_started_at"] = time.time()
+            else:
+                self.current_activity["current_anime"] = None
+                self.current_activity["current_episode"] = None
+                self.current_activity["watch_started_at"] = None
+
+    def _send_heartbeat(self):
+        with self._activity_lock:
+            activity = dict(self.current_activity)
+        start = self._session_start or time.time()
+        details = {
+            "session_start": datetime.fromtimestamp(start, timezone.utc).isoformat(),
+            "elapsed_session_seconds": round(time.time() - start, 3),
+            "status": activity.get("status", "idle"),
+            "current_anime": activity.get("current_anime"),
+            "current_episode": activity.get("current_episode"),
+        }
+        watch_started = activity.get("watch_started_at")
+        if watch_started:
+            details["watch_started_at"] = datetime.fromtimestamp(watch_started, timezone.utc).isoformat()
+        self._send_data("heartbeat", details)
+
+    def _send_session_end(self):
+        try:
+            end = time.time()
+            start = getattr(self, "_session_start", None) or end
+            self._send_data("app_session_end", {
+                "session_start": datetime.fromtimestamp(start, timezone.utc).isoformat(),
+                "session_end": datetime.fromtimestamp(end, timezone.utc).isoformat(),
+                "session_duration_seconds": round(end - start, 3),
+            }, sync=True)
+        except Exception:
+            pass
+
+    def track_video_play(self, anime_title: str, episode: str, mode: str = "stream", player: str = "", provider: str = "", quality: str = "",
+                         watch_start: float = None, watch_end: float = None):
+        details = {
             "anime": anime_title,
             "episode": episode,
             "mode": mode,
             "player": player or "",
             "provider": provider or "",
             "quality": quality or ""
-        })
+        }
+        if watch_start is not None and watch_end is not None:
+            try:
+                start = float(watch_start)
+                end = float(watch_end)
+                details["watch_start"] = datetime.fromtimestamp(start, timezone.utc).isoformat()
+                details["watch_end"] = datetime.fromtimestamp(end, timezone.utc).isoformat()
+                details["watch_duration_seconds"] = round(max(end - start, 0.0), 3)
+            except (TypeError, ValueError, OverflowError):
+                pass
+        self._send_data("video_play", details)
 
     @staticmethod
     def _host_of(url) -> str:
@@ -114,6 +224,41 @@ class MonitoringSystem:
         if len(lines) > _MAX_TRACEBACK_LINES:
             return "\n".join(lines[-_MAX_TRACEBACK_LINES:])
         return joined
+
+    @staticmethod
+    def _system_context() -> dict:
+        """Rich, always-available system/user context for error payloads."""
+        context = {
+            "os": f"{platform.system()} {platform.release()}",
+            "user_name": "",
+            "app_version": __version__,
+        }
+        try:
+            context["user_name"] = getpass.getuser() or ""
+        except Exception:
+            context["user_name"] = ""
+        return context
+
+    @staticmethod
+    def _translation_mode(details: dict) -> str:
+        """Map user settings/CLI language preference to a canonical mode."""
+        mode = details.get("translation_mode") or details.get("sub_type")
+        if mode:
+            return str(mode)
+        try:
+            from .settings import SettingsManager
+            lang = str(SettingsManager().get('preferred_language', 'Arabic Sub'))
+            mapping = {
+                "Arabic Sub": "arabic_sub",
+                "English Sub": "sub",
+                "English Dub": "dub",
+            }
+            for key, value in mapping.items():
+                if key.lower() in lang.lower():
+                    return value
+        except Exception:
+            pass
+        return "sub"
 
     def track_error(self, error_msg: str = "", context: dict = None,
                     exception: BaseException = None, exc_info: tuple = None):
@@ -165,6 +310,9 @@ class MonitoringSystem:
                     url = exc_val.request.url
                 if url:
                     details["server_url"] = self._host_of(url)
+
+        if not details.get("translation_mode") and not details.get("sub_type"):
+            details["translation_mode"] = self._translation_mode(details)
 
         self._send_data("error", details)
 

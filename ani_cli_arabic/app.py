@@ -1,6 +1,7 @@
 import sys
 import atexit
 import re
+import time
 from pathlib import Path
 from rich.align import Align
 from rich.panel import Panel
@@ -137,6 +138,7 @@ class AniCliArApp:
             threading.Thread(target=connect_rpc, daemon=True).start()
         
         threading.Thread(target=lambda: monitor.track_app_start(), daemon=True).start()
+        monitor.track_app_session()
         
         def check_updates_bg():
             try:
@@ -744,7 +746,9 @@ class AniCliArApp:
         
         self.ui.console.print(Align.center(panel, vertical="middle", height=self.ui.console.height))
         
+        monitor.set_activity("watching", anime.title_en, None)
         self.player.play(trailer_url, f"Trailer - {anime.title_en}")
+        monitor.set_activity("idle")
 
     def handle_episode_selection(self, selected_anime, episodes, initial_idx=0):
         current_idx = max(0, min(int(initial_idx or 0), len(episodes) - 1))
@@ -906,7 +910,7 @@ class AniCliArApp:
             monitor.track_error(
                 "English stream resolution failed",
                 {"anime": anime_title, "episode": str(episode_num), "provider": provider or "auto",
-                 "mode": mode},
+                 "mode": mode, "translation_mode": mode},
                 exc_info=(exc_type, exc_val, exc_tb),
             )
             return "", {}, ""
@@ -1147,13 +1151,19 @@ class AniCliArApp:
                         ipc_socket = self.watch_host.socket_path
                     self.watch_host.notify_load(selected_anime.title_en, selected_ep.display_num, "Arabic Sub")
                 
+                watch_start = time.time()
+                monitor.set_activity("watching", selected_anime.title_en, str(selected_ep.display_num))
                 selected_player = self.player.play(direct_url, f"{selected_anime.title_en} - Ep {selected_ep.display_num} ({quality.name})", player_type=player_type, ipc_socket=ipc_socket, rc_port=rc_port)
+                watch_end = time.time()
+                monitor.set_activity("idle")
                 monitor.track_video_play(
                     selected_anime.title_en,
                     str(selected_ep.display_num),
                     player=selected_player or player_type or "",
                     provider="arabic_api",
                     quality=quality_tag or "",
+                    watch_start=watch_start,
+                    watch_end=watch_end,
                 )
                 if self.watch_host is not None:
                     self.watch_host.notify_stop()
@@ -1169,6 +1179,7 @@ class AniCliArApp:
                     "episode": str(selected_ep.display_num),
                     "language": "Arabic",
                     "provider": "arabic_api",
+                    "translation_mode": "arabic_sub",
                     "server_url": "www.mediafire.com",
                 },
             )
@@ -1236,6 +1247,7 @@ class AniCliArApp:
                     "provider": provider_choice or "auto",
                     "quality": quality_name,
                     "dub": dub,
+                    "translation_mode": "dub" if dub else "sub",
                 },
             )
             self.ui.render_message(
@@ -1285,13 +1297,19 @@ class AniCliArApp:
                 "English Dub" if dub else "English Sub",
             )
 
+        watch_start = time.time()
+        monitor.set_activity("watching", selected_anime.title_en, str(selected_ep.display_num))
         selected_player = self.player.play(direct_url, f"{selected_anime.title_en} - Ep {selected_ep.display_num}", player_type=player_type, headers=stream_headers, ipc_socket=ipc_socket, rc_port=rc_port)
+        watch_end = time.time()
+        monitor.set_activity("idle")
         monitor.track_video_play(
             selected_anime.title_en,
             str(selected_ep.display_num),
             player=selected_player or player_type or "",
             provider=provider_name or "",
             quality=quality_name or "",
+            watch_start=watch_start,
+            watch_end=watch_end,
         )
         if self.watch_host is not None:
             self.watch_host.notify_stop()

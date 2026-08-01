@@ -703,6 +703,13 @@ class WatchGuest:
             except Exception:
                 url, headers, provider = "", {}, ""
                 exc_type, exc_val, exc_tb = sys.exc_info()
+                lang = str(payload.get("language", ""))
+                if "dub" in lang.lower():
+                    mode = "dub"
+                elif "arabic" in lang.lower():
+                    mode = "arabic_sub"
+                else:
+                    mode = "sub"
                 try:
                     from .monitoring import monitor
                     monitor.track_error(
@@ -710,8 +717,9 @@ class WatchGuest:
                         {
                             "anime": payload.get("title", ""),
                             "episode": payload.get("episode", ""),
-                            "language": payload.get("language", ""),
-                            "provider": "arabic_api",
+                            "language": lang,
+                            "provider": "arabic_api" if "arabic" in lang.lower() else "",
+                            "translation_mode": mode,
                         },
                         exc_info=(exc_type, exc_val, exc_tb),
                     )
@@ -726,6 +734,18 @@ class WatchGuest:
         threading.Thread(target=worker, daemon=True).start()
 
     def _launch_player(self, url: str, headers: Dict[str, str]):
+        self._watch_start = time.time()
+        with self._state_lock:
+            self._watch_meta = dict(self._pending)
+        try:
+            from .monitoring import monitor
+            monitor.set_activity(
+                "watching",
+                self._watch_meta.get("title", ""),
+                self._watch_meta.get("episode"),
+            )
+        except Exception:
+            pass
         if self.player_kind == "vlc":
             vlc_path = self._player.get_available_players().get("VLC") or "vlc"
             args = self._player.build_vlc_args(
@@ -781,6 +801,24 @@ class WatchGuest:
             self._ipc.close()
             self._player_proc = None
         self._player.cleanup_guest_input_conf()
+        try:
+            from .monitoring import monitor
+            monitor.set_activity("idle")
+            start = getattr(self, "_watch_start", None)
+            if start is not None:
+                meta = getattr(self, "_watch_meta", {}) or {}
+                lang = str(meta.get("language", ""))
+                from .monitoring import monitor
+                monitor.track_video_play(
+                    meta.get("title", "") or "",
+                    meta.get("episode", "") or "",
+                    player=self.player_kind,
+                    provider="arabic_api" if "arabic" in lang.lower() else "",
+                    watch_start=start,
+                    watch_end=time.time(),
+                )
+        except Exception:
+            pass
 
     def _apply_pending(self):
         if not self._ipc.connect(timeout=20.0):
