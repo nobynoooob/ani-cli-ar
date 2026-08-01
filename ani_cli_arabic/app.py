@@ -79,32 +79,72 @@ class AniCliArApp:
             import urllib.request
             import subprocess
             from .version import __version__
+            from packaging.version import Version, InvalidVersion
 
-            try:
-                resp = urllib.request.urlopen(
-                    "https://pypi.org/pypi/ani-cli-ar/json", timeout=10
-                )
-                latest = json.load(resp)["info"]["version"]
-            except Exception:
+            def _fetch_pypi():
+                try:
+                    resp = urllib.request.urlopen(
+                        "https://pypi.org/pypi/ani-cli-ar/json", timeout=10
+                    )
+                    return json.load(resp)
+                except Exception:
+                    return None
+
+            latest = None
+            if args.test:
+                data = _fetch_pypi()
+                if data is not None:
+                    latest = data.get("info", {}).get("version")
+            else:
+                data = _fetch_pypi()
+                if data is not None:
+                    stable = []
+                    releases = data.get("releases", {})
+                    for ver_str in releases:
+                        try:
+                            ver = Version(ver_str)
+                        except InvalidVersion:
+                            continue
+                        if ver.is_prerelease:
+                            continue
+                        files = releases.get(ver_str) or []
+                        if not files or all(f.get("yanked") for f in files):
+                            continue
+                        stable.append(ver)
+                    if stable:
+                        latest = str(max(stable))
+                    else:
+                        info_ver = data.get("info", {}).get("version")
+                        if info_ver and not Version(info_ver).is_prerelease:
+                            latest = info_ver
+
+            if latest is None:
                 print("Failed to check latest version. Trying update anyway...")
-                latest = None
 
             if latest and latest == __version__:
                 print(f"ani-cli-ar is already up to date! (v{__version__})")
                 sys.exit(0)
 
             if latest:
-                print(f"Updating ani-cli-ar from v{__version__} to v{latest}...")
+                try:
+                    is_downgrade = Version(latest) < Version(__version__)
+                except InvalidVersion:
+                    is_downgrade = False
+                if is_downgrade:
+                    print(f"Reverting ani-cli-ar from v{__version__} to stable v{latest}...")
+                else:
+                    print(f"Updating ani-cli-ar from v{__version__} to v{latest}...")
             else:
                 print(f"Updating ani-cli-ar...")
 
-            pip_cmd = [
-                sys.executable, "-m", "pip", "install",
-                "--upgrade",
-            ]
+            pip_cmd = [sys.executable, "-m", "pip", "install", "--upgrade"]
             if args.test:
-                pip_cmd.append("--pre")
-            pip_cmd += ["ani-cli-ar", "--break-system-packages"]
+                pip_cmd += ["--pre", "ani-cli-ar"]
+            elif latest:
+                pip_cmd += ["--force-reinstall", f"ani-cli-ar=={latest}"]
+            else:
+                pip_cmd.append("ani-cli-ar")
+            pip_cmd.append("--break-system-packages")
             result = subprocess.run(pip_cmd, capture_output=True, text=True)
             if result.returncode == 0:
                 print("Successfully updated ani-cli-ar!")

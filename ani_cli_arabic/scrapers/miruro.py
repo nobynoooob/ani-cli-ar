@@ -217,6 +217,9 @@ class MiruroScraper(BaseScraper):
                                     "provider": pname,
                                     "cat": category,
                                 }
+                            elif not raw[ep_num].get("alt_eid") and category != raw[ep_num]["cat"]:
+                                raw[ep_num]["alt_eid"] = ep_id
+                                raw[ep_num]["alt_cat"] = category
             return [
                 {
                     "episode_num": float(ep_num),
@@ -225,6 +228,8 @@ class MiruroScraper(BaseScraper):
                         "provider": meta["provider"],
                         "anilist_id": anilist_id,
                         "category": meta["cat"],
+                        "alt_eid": meta.get("alt_eid", ""),
+                        "alt_cat": meta.get("alt_cat", ""),
                     }),
                 }
                 for ep_num, meta in sorted(raw.items())
@@ -239,16 +244,31 @@ class MiruroScraper(BaseScraper):
             provider = meta.get("provider", "")
             anilist_id = meta.get("anilist_id", 0)
             category = meta.get("category", "sub")
+            alt_eid = meta.get("alt_eid", "")
+            alt_cat = meta.get("alt_cat", "")
         except (json.JSONDecodeError, TypeError):
             return {"stream_url": None, "headers": {}}
         if not raw_eid or not provider:
             return {"stream_url": None, "headers": {}}
+
+        attempts = [(raw_eid, category), (alt_eid, alt_cat)]
+        for eid, cat in attempts:
+            if not eid:
+                continue
+            result = self._resolve_source(eid, provider, anilist_id, cat)
+            if result:
+                return result
+        return {"stream_url": None, "headers": {}}
+
+    def _resolve_source(
+        self, eid: str, provider: str, anilist_id: int, category: str
+    ) -> Optional[Dict]:
         try:
             payload = {
                 "path": "sources",
                 "method": "GET",
                 "query": {
-                    "episodeId": raw_eid,
+                    "episodeId": eid,
                     "provider": provider,
                     "anilistId": anilist_id,
                     "category": category,
@@ -258,10 +278,10 @@ class MiruroScraper(BaseScraper):
             }
             data = self._pipe_fetch(payload)
             if not data:
-                return {"stream_url": None, "headers": {}}
+                return None
             streams = data.get("streams", [])
             if not streams:
-                return {"stream_url": None, "headers": {}}
+                return None
             streams = sorted(
                 streams, key=lambda s: quality_rank(s.get("quality")), reverse=True
             )
@@ -280,6 +300,6 @@ class MiruroScraper(BaseScraper):
                     "stream_url": url,
                     "headers": {"Referer": ref, "User-Agent": USER_AGENT},
                 }
-            return {"stream_url": None, "headers": {}}
         except Exception:
-            return {"stream_url": None, "headers": {}}
+            return None
+        return None

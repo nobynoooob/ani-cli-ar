@@ -34,6 +34,29 @@ EV_SEEK = "SEEK"
 EV_HEARTBEAT = "HEARTBEAT"
 
 
+def _normalize_language(raw) -> str:
+    """Map user language preference to one canonical value.
+
+    Accepts the canonical labels plus common aliases (ISO codes, Arabic
+    names). Defaults to Arabic Sub when unknown/empty so guests never fall
+    through to English unintentionally.
+    """
+    norm = (raw or "").strip().lower()
+    if not norm or norm in (
+        "ar",
+        "arabic",
+        "arabic sub",
+        "arabic_sub",
+        "arabic-sub",
+        "العربية",
+        "عربي",
+    ):
+        return "Arabic Sub"
+    if "dub" in norm:
+        return "English Dub"
+    return "English Sub"
+
+
 def _socket_path(code: str) -> str:
     if platform.system() == "Windows":
         return f"\\\\.\\pipe\\ani-cli-watch-{code}"
@@ -642,9 +665,10 @@ class WatchGuest:
     def _local_language() -> str:
         from .settings import SettingsManager
         try:
-            return str(SettingsManager().get("preferred_language", "Arabic Sub"))
+            raw = SettingsManager().get("preferred_language", "Arabic Sub")
         except Exception:
-            return "Arabic Sub"
+            raw = "Arabic Sub"
+        return _normalize_language(raw)
 
     def _resolve_stream(self, payload: dict) -> Tuple[str, Dict, str]:
         title = payload.get("title", "")

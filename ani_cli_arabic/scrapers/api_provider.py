@@ -123,28 +123,39 @@ class ApiScraper(BaseScraper):
     def get_stream_url(self, episode_id: str) -> Dict:
         if not self._discover():
             return {"stream_url": None, "headers": {}}
-        try:
-            r = _CLIENT.get(
-                f"{self._base_url}/anime/{self._active_prov}/watch/{episode_id}"
-            )
-            if r.status_code != 200:
+        data = None
+        for attempt in range(2):
+            try:
+                r = _CLIENT.get(
+                    f"{self._base_url}/anime/{self._active_prov}/watch/{episode_id}"
+                )
+                if r.status_code != 200:
+                    if attempt == 0:
+                        continue
+                    return {"stream_url": None, "headers": {}}
+                data = r.json()
+                break
+            except Exception:
+                if attempt == 0:
+                    continue
                 return {"stream_url": None, "headers": {}}
-            data = r.json()
-            sources = data.get("sources", [])
-            if not sources:
-                return {"stream_url": None, "headers": {}}
-            sources = sorted(
-                sources, key=lambda s: quality_rank(s.get("quality")), reverse=True
-            )
-            url = next((s.get("url", "") for s in sources if s.get("url")), "")
-            if not url:
-                return {"stream_url": None, "headers": {}}
-            return {
-                "stream_url": url,
-                "headers": {
-                    "Referer": f"{self._base_url}/",
-                    "User-Agent": USER_AGENT,
-                },
-            }
-        except Exception:
+        if not data:
             return {"stream_url": None, "headers": {}}
+        sources = data.get("sources", [])
+        if not sources:
+            return {"stream_url": None, "headers": {}}
+        sources = sorted(
+            sources, key=lambda s: quality_rank(s.get("quality")), reverse=True
+        )
+        source = next((s for s in sources if s.get("url")), None)
+        if not source:
+            return {"stream_url": None, "headers": {}}
+        url = source.get("url", "")
+        headers: Dict[str, str] = {"User-Agent": USER_AGENT}
+        source_headers = source.get("headers")
+        if isinstance(source_headers, dict):
+            ref = source_headers.get("Referer")
+            if ref:
+                headers["Referer"] = str(ref)
+        headers.setdefault("Referer", f"{self._base_url}/")
+        return {"stream_url": url, "headers": headers}
