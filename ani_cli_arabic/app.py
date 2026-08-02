@@ -237,14 +237,14 @@ class AniCliArApp:
                 self.ui.print(Align.center(Text.from_markup("Discord Rich Presence [dim](disabled)[/dim]", style="dim")))
             
             if self.watch_host is not None:
-                self.ui.print(Align.center(Text.from_markup(f"Watch Together: [bold green]Hosting Room {self.watch_host.code}[/bold green]", style="secondary")))
+                self._render_watch_status(self.watch_host)
             elif self.watch_guest is not None:
-                self.ui.print(Align.center(Text.from_markup(f"Watch Together: [bold yellow]Joined Room {self.watch_guest.code} (syncing)[/bold yellow]", style="secondary")))
+                self._render_watch_status(self.watch_guest)
             
             self.ui.print()
 
             keybinds_panel = Panel(
-                Text("T: Trending | P: Popular | G: Genres | S: Studios | L: History | F: Favorites | W: Watch Together | C: Settings | Q: Quit", style="info", justify="center"),
+                Text("T: Trending | P: Popular | G: Genres | S: Studios | L: History | F: Favorites | W: Watch Together | M: Manage Members | C: Settings | Q: Quit", style="info", justify="center"),
                 box=HEAVY,
                 border_style=COLOR_BORDER
             )
@@ -318,6 +318,9 @@ class AniCliArApp:
             elif query == 'w':
                 self.handle_watch_together()
                 continue
+            elif query == 'm':
+                self.handle_manage_members()
+                continue
             elif query == 'a':
                 self.ui.show_credits()
                 continue
@@ -376,6 +379,124 @@ class AniCliArApp:
             "Session stopped.",
             "info",
         )
+
+    def _render_watch_status(self, session):
+        """Render the room context line plus minimalistic profile modules for
+        each active member (host vs guest vs co-host color coded)."""
+        is_host = self.watch_host is not None
+        code = session.code
+        host_name = session.username if is_host else ""
+        for name, role in (session.members or {}).items():
+            if role == "host":
+                host_name = name
+                break
+        if is_host:
+            room_line = f"Watch Together: [bold green]Hosting Room {code}[/bold green] [dim]| Host: {host_name}[/dim]"
+        else:
+            room_line = f"Watch Together: [bold yellow]Joined Room {code}[/bold yellow] [dim](syncing)[/dim] [dim]| Host: {host_name}[/dim]"
+        self.ui.print(Align.center(Text.from_markup(room_line, style="secondary")))
+
+        roster = session.members or {}
+        if not roster:
+            self.ui.print(Align.center(Text.from_markup("[dim]No other members yet.[/dim]", style="secondary")))
+            return
+
+        markers = {
+            "host": ("●", "bold green", " (Host)"),
+            "co-host": ("◆", "bold cyan", " (Co-Host)"),
+            "guest": ("○", "bold yellow", ""),
+        }
+        profile_lines = Text()
+        first = True
+        for name, role in roster.items():
+            marker, color, suffix = markers.get(role, markers["guest"])
+            if not first:
+                profile_lines.append("   ", style="dim")
+            profile_lines.append(f"{marker} ", style=color)
+            profile_lines.append(name, style=color + " bold")
+            if suffix:
+                profile_lines.append(suffix, style=color)
+            first = False
+        panel = Panel(
+            Align.center(profile_lines),
+            title=Text("ROOM MEMBERS", style="title"),
+            box=HEAVY,
+            border_style=COLOR_BORDER,
+            padding=(0, 2),
+        )
+        self.ui.print(Align.center(panel))
+
+    def handle_manage_members(self):
+        """M key: manage members submenu. Hosts can kick/promote guests."""
+        session = self.watch_host or self.watch_guest
+        if session is None:
+            self.ui.render_message(
+                "Manage Members",
+                "You are not in a Watch Together session.\n\nPress W to host or join a room first.",
+                "info",
+            )
+            return
+
+        is_host = self.watch_host is not None
+        roster = session.members or {}
+
+        def member_entries():
+            return [
+                (name, role)
+                for name, role in roster.items()
+            ]
+
+        while True:
+            entries = member_entries()
+            if not entries:
+                self.ui.render_message(
+                    "Manage Members",
+                    "No members in the room yet.",
+                    "info",
+                )
+                return
+
+            items = []
+            for name, role in entries:
+                role_tag = {
+                    "host": "Host",
+                    "co-host": "Co-Host",
+                    "guest": "Guest",
+                }.get(role, "Guest")
+                items.append(f"{name} ({role_tag})")
+
+            if is_host:
+                items.append("Kick a member...")
+                items.append("Promote a member...")
+            items.append("Close")
+
+            choice = self.ui.selection_menu(items, title=f"Manage Members — Room {session.code}")
+            if choice is None or choice == "Close":
+                return
+
+            if choice == "Kick a member...":
+                kickable = [n for n, r in member_entries() if n != session.username and r != "host"]
+                if not kickable:
+                    self.ui.render_message("Manage Members", "No members to kick.", "info")
+                    continue
+                target = self.ui.selection_menu(kickable, title="Kick Member")
+                if target is not None and self.watch_host is not None:
+                    self.watch_host.kick_member(target)
+                    self.ui.render_message("Manage Members", f"Kicked {target}.", "info")
+                continue
+
+            if choice == "Promote a member...":
+                promotable = [n for n, r in member_entries() if r == "guest"]
+                if not promotable:
+                    self.ui.render_message("Manage Members", "No guests to promote.", "info")
+                    continue
+                target = self.ui.selection_menu(promotable, title="Promote Member")
+                if target is not None and self.watch_host is not None:
+                    self.watch_host.promote_member(target)
+                    self.ui.render_message("Manage Members", f"Promoted {target} to co-host.", "info")
+                continue
+
+            return
 
     def _select_watch_player(self):
         players = self.player.get_available_players()
@@ -1149,7 +1270,13 @@ class AniCliArApp:
                         rc_port = self.watch_host.rc_port
                     else:
                         ipc_socket = self.watch_host.socket_path
-                    self.watch_host.notify_load(selected_anime.title_en, selected_ep.display_num, "Arabic Sub")
+                    self.watch_host.notify_load(
+                        selected_anime.title_en,
+                        selected_ep.display_num,
+                        "Arabic Sub",
+                        url=direct_url,
+                        headers={},
+                    )
                 
                 watch_start = time.time()
                 monitor.set_activity("watching", selected_anime.title_en, str(selected_ep.display_num))
@@ -1295,6 +1422,8 @@ class AniCliArApp:
                 selected_anime.title_en,
                 selected_ep.display_num,
                 "English Dub" if dub else "English Sub",
+                url=direct_url,
+                headers=stream_headers,
             )
 
         watch_start = time.time()

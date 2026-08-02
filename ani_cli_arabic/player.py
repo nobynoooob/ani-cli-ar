@@ -23,6 +23,27 @@ class PlayerManager:
         self.rpc_manager = rpc_manager
         self.console = console
         self.guest_input_conf_path = None
+        self._last_proc: Optional[subprocess.Popen] = None
+
+    def kill_active_player(self):
+        """Terminate the most recently launched player process, if still
+        running (used by atexit / Watch Together cleanup)."""
+        proc = self._last_proc
+        if proc is None:
+            return
+        if proc.poll() is None:
+            try:
+                proc.kill()
+            except Exception:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+        try:
+            proc.wait(timeout=5.0)
+        except Exception:
+            pass
+        self._last_proc = None
 
     def build_mpv_args(
         self,
@@ -353,16 +374,20 @@ class PlayerManager:
         else:
             sys.stderr.write(f"[DEBUG] Launching VLC with stream URL: {url}\n")
 
-        result = subprocess.run(
+        proc = subprocess.Popen(
             vlc_args,
-            check=False,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
         )
+        self._last_proc = proc
+        try:
+            result = proc.wait()
+        finally:
+            self._last_proc = None
 
-        if result.returncode != 0:
-            err_msg = result.stderr.decode("utf-8", errors="replace") if result.stderr else ""
-            detail = f"VLC exited with error code {result.returncode}"
+        if result != 0:
+            err_msg = proc.stderr.read().decode("utf-8", errors="replace") if proc.stderr else ""
+            detail = f"VLC exited with error code {result}"
             if err_msg:
                 detail += f"\nVLC stderr:\n{err_msg[:2000]}"
             if self.console:
@@ -395,17 +420,21 @@ class PlayerManager:
         else:
             sys.stderr.write(f"[DEBUG] Launching MPV with stream URL: {url}\n")
 
-        result = subprocess.run(
+        proc = subprocess.Popen(
             mpv_args,
-            check=False,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
         )
+        self._last_proc = proc
+        try:
+            result = proc.wait()
+        finally:
+            self._last_proc = None
 
-        if result.returncode != 0:
-            err_msg = result.stderr.decode("utf-8", errors="replace") if result.stderr else ""
-            detail = f"MPV exited with error code {result.returncode}"
+        if result != 0:
+            err_msg = proc.stderr.read().decode("utf-8", errors="replace") if proc.stderr else ""
+            detail = f"MPV exited with error code {result}"
             if err_msg:
                 detail += f"\nMPV stderr:\n{err_msg[:2000]}"
             if self.console:

@@ -1,6 +1,8 @@
 """Watch Together room sync via Supabase Realtime Broadcast + mpv IPC."""
 
 import asyncio
+import atexit
+import getpass
 import json
 import os
 import platform
@@ -19,15 +21,41 @@ from .player import PlayerManager
 ROOM_CODE_LEN = 6
 HEARTBEAT_INTERVAL = 3.0
 DRIFT_THRESHOLD = 1.5
+SYNC_HARD_SEEK_THRESHOLD = 2.0
 SEEK_BACKWARD_TOLERANCE = 2.0
 SEEK_FORWARD_TOLERANCE = 8.0
 POLL_INTERVAL = 0.5
+RECONNECT_TIMEOUT = 30.0
+SEEK_COOLDOWN = 2.0
+
+SENDER_HOST = "host"
+ROLE_HOST = "host"
+ROLE_GUEST = "guest"
+ROLE_CO_HOST = "co-host"
 
 EV_LOAD = "LOAD_MEDIA"
 EV_PLAY = "PLAY"
 EV_PAUSE = "PAUSE"
 EV_SEEK = "SEEK"
 EV_HEARTBEAT = "HEARTBEAT"
+EV_JOIN = "JOIN"
+EV_LEAVE = "LEAVE"
+EV_STATE = "STATE"
+EV_MEMBERS = "MEMBERS"
+
+
+def _os_username() -> str:
+    """Return the local OS username, sanitized and guaranteed non-empty."""
+    raw = ""
+    for fn in (lambda: getpass.getuser(), lambda: os.getlogin()):
+        try:
+            raw = fn()
+        except Exception:
+            raw = ""
+        if raw:
+            break
+    name = str(raw).strip().strip('"').strip("'")
+    return name or "User"
 
 
 def _socket_path(code: str) -> str:
@@ -160,7 +188,7 @@ class SupabaseRealtime:
                     pass
             return handler
 
-        for evt in (EV_LOAD, EV_PLAY, EV_PAUSE, EV_SEEK, EV_HEARTBEAT):
+        for evt in (EV_LOAD, EV_PLAY, EV_PAUSE, EV_SEEK, EV_HEARTBEAT, EV_JOIN, EV_LEAVE, EV_STATE, EV_MEMBERS):
             try:
                 channel.on_broadcast(event=evt, callback=make_handler())
             except Exception:
@@ -279,10 +307,11 @@ class MpvIpcClient:
             raise OSError("mpv IPC not connected")
         self._sock.sendall((json.dumps(obj) + "\n").encode("utf-8"))
 
-    def _read_line(self) -> Optional[dict]:
+    def _read_line(self, timeout: float = 2.0) -> Optional[dict]:
         if self._sock is None:
             return None
         try:
+            self._sock.settimeout(timeout)
             while b"\n" not in self._buf:
                 chunk = self._sock.recv(4096)
                 if not chunk:
@@ -336,6 +365,30 @@ class MpvIpcClient:
 
     def seek(self, seconds: float):
         self.send_command(["set_property", "time-pos", float(seconds)])
+
+    def ping(self) -> bool:
+        """Check that the mpv IPC socket is still alive. On failure, drop the
+        socket so callers can reconnect."""
+        with self._lock:
+            if self._sock is None:
+                return False
+            try:
+                self._send({"command": ["get_property", "time-pos"]})
+                self._read_line(timeout=1.0)
+                return True
+            except (OSError, AttributeError, ValueError):
+                pass
+            try:
+                self._sock.close()
+            except OSError:
+                pass
+            self._sock = None
+            self._buf = b""
+            return False
+
+    def show_text(self, msg: str, duration_ms: int = 2000):
+        """Display an OSD message in mpv (mpv-only; VLC has no reliable OSD)."""
+        self.send_command(["show-text", str(msg), duration_ms])
 
 
 def _pick_free_port() -> int:
@@ -482,6 +535,26 @@ class VlcIpcClient:
     def seek(self, seconds: float):
         self.request(f"seek {int(seconds)}")
 
+    def ping(self) -> bool:
+        """Check that the VLC rc socket is still alive. On failure, drop the
+        socket so callers can reconnect."""
+        with self._lock:
+            if self._sock is None:
+                return False
+            try:
+                self._send("status")
+                self._read_response(timeout=1.0)
+                return True
+            except (OSError, AttributeError, ValueError):
+                pass
+            try:
+                self._sock.close()
+            except OSError:
+                pass
+            self._sock = None
+            self._buf = b""
+            return False
+
 
 def _loadfile_command(url: str, headers: Optional[Dict[str, str]]) -> list:
     options: Dict[str, list] = {}
@@ -513,6 +586,10 @@ class WatchHost:
         self._current = {}
         self._sync_thread: Optional[threading.Thread] = None
         self._active = False
+        self._stopped = False
+        self.username = _os_username()
+        self.members: Dict[str, str] = {self.username: ROLE_HOST}
+        atexit.register(self._atexit_cleanup)
 
     @property
     def is_active(self) -> bool:
@@ -524,25 +601,128 @@ class WatchHost:
         self._channel = self._rt.channel(self.code)
         if self._channel is None:
             return False
+        self._channel.on_broadcast(event="*", callback=self._on_message)
         self._channel.subscribe()
         self._active = True
+        self._broadcast_members()
         return True
+
+    def _disambiguate_name(self, name: str) -> str:
+        """Append a numeric suffix when a joining member shares a username
+        with an existing member (e.g. testing locally in two terminals)."""
+        if name not in self.members:
+            return name
+        n = 2
+        while f"{name}_{n}" in self.members:
+            n += 1
+        return f"{name}_{n}"
+
+    def _member_list(self) -> list:
+        return [
+            {"name": name, "role": role}
+            for name, role in self.members.items()
+        ]
+
+    def _broadcast_members(self):
+        payload = {
+            "members": self._member_list(),
+            "host": self.username,
+        }
+        self._broadcast(EV_MEMBERS, payload)
+
+    def _on_message(self, message: dict):
+        """Host is the single authority: it ignores all incoming playback
+        control events. Only presence notifications (join/leave) are used,
+        for roster + OSD display purposes."""
+        event = message.get("event")
+        payload = message.get("payload") or {}
+        if event == EV_JOIN:
+            self._on_guest_joined(payload)
+        elif event == EV_LEAVE:
+            self._on_guest_left(payload)
+
+    def _on_guest_joined(self, payload: dict):
+        raw = str(payload.get("username") or _os_username()).strip() or "User"
+        name = self._disambiguate_name(raw)
+        if name not in self.members:
+            self.members[name] = ROLE_GUEST
+        self._broadcast_members()
+        self._send_state()
+        self._osd(f"{name} joined")
+
+    def _on_guest_left(self, payload: dict):
+        raw = str(payload.get("username") or "").strip()
+        self.members.pop(raw, None)
+        self._broadcast_members()
+        if raw:
+            self._osd(f"{raw} left")
+
+    def kick_member(self, name: str) -> bool:
+        """Host action: remove a member from the roster and broadcast the
+        updated list. Returns True if the member was found and removed."""
+        name = str(name or "").strip()
+        if not name or name == self.username or name not in self.members:
+            return False
+        if self.members.pop(name, None) is not None:
+            self._broadcast_members()
+            self._send_state()
+            self._osd(f"{name} was kicked by host")
+            return True
+        return False
+
+    def promote_member(self, name: str) -> bool:
+        """Host action: promote a guest to co-host. Returns True on success."""
+        name = str(name or "").strip()
+        if name not in self.members:
+            return False
+        self.members[name] = ROLE_CO_HOST
+        self._broadcast_members()
+        self._send_state()
+        self._osd(f"{name} promoted to co-host")
+        return True
+
+    def _osd(self, msg: str):
+        if self.player_kind == "vlc" or not self._ipc.connected:
+            return
+        try:
+            threading.Thread(
+                target=lambda: self._ipc.show_text(str(msg), 2000),
+                daemon=True,
+            ).start()
+        except Exception:
+            pass
 
     def _broadcast(self, event: str, payload: dict):
         if self._channel is None:
             return
         try:
-            self._channel.send_broadcast(event, payload)
+            data = dict(payload)
+            data.setdefault("sender", SENDER_HOST)
+            self._channel.send_broadcast(event, data)
         except Exception:
             pass
 
-    def notify_load(self, title: str, episode_num, language: str = "English Sub"):
+    def _send_state(self):
+        payload = dict(self._current)
+        payload["sender"] = SENDER_HOST
+        payload["host"] = self.username
+        payload["members"] = self._member_list()
+        payload.setdefault("time", self._ipc.get_time_pos() if self._ipc.connected else None)
+        if self._ipc.connected:
+            paused = self._ipc.get_pause()
+            payload["playing"] = bool(paused is False)
+        self._broadcast(EV_STATE, payload)
+
+    def notify_load(self, title: str, episode_num, language: str = "English Sub", url: str = "", headers: Optional[Dict[str, str]] = None):
         self._current = {
             "title": title,
             "episode": str(episode_num),
             "language": language,
+            "url": url or "",
+            "headers": dict(headers) if headers else {},
         }
         self._broadcast(EV_LOAD, self._current)
+        self._osd(f"Now playing: {title} - Ep {episode_num}")
         self._stop.clear()
         if self._sync_thread is None or not self._sync_thread.is_alive():
             self._sync_thread = threading.Thread(
@@ -554,6 +734,16 @@ class WatchHost:
         self._broadcast(EV_PAUSE, {})
         self._stop.set()
 
+    def _reconnect_ipc(self) -> bool:
+        """Reconnect a dropped IPC socket, retrying for up to
+        RECONNECT_TIMEOUT seconds."""
+        deadline = time.time() + RECONNECT_TIMEOUT
+        while time.time() < deadline and not self._stop.is_set():
+            if self._ipc.connect(timeout=2.0):
+                return True
+            time.sleep(0.5)
+        return False
+
     def _sync_loop(self):
         if not self._ipc.connect(timeout=20.0):
             self._stop.set()
@@ -561,17 +751,29 @@ class WatchHost:
         prev_time: Optional[float] = None
         prev_pause: Optional[bool] = None
         last_heartbeat = 0.0
+        last_ping = 0.0
         while not self._stop.is_set():
+            now = time.time()
+            if not self._ipc.connected:
+                if not self._reconnect_ipc():
+                    break
+                continue
+            if now - last_ping >= HEARTBEAT_INTERVAL:
+                if not self._ipc.ping():
+                    self._reconnect_ipc()
+                last_ping = now
             time_pos = self._ipc.get_time_pos()
             paused = self._ipc.get_pause()
             now = time.time()
             if paused is not None and paused != prev_pause:
                 self._broadcast(EV_PAUSE if paused else EV_PLAY, {})
+                self._osd("Paused by host" if paused else "Resumed by host")
                 prev_pause = paused
             if time_pos is not None and prev_time is not None:
                 delta = time_pos - prev_time
                 if delta < -SEEK_BACKWARD_TOLERANCE or delta > SEEK_FORWARD_TOLERANCE:
                     self._broadcast(EV_SEEK, {"time": time_pos})
+                    self._osd(f"Seeking to {time_pos:.0f}s")
             if time_pos is not None:
                 prev_time = time_pos
             if now - last_heartbeat >= HEARTBEAT_INTERVAL:
@@ -582,13 +784,28 @@ class WatchHost:
                         "playing": bool(paused is False),
                         "title": self._current.get("title", ""),
                         "episode": self._current.get("episode", ""),
+                        "url": self._current.get("url", ""),
+                        "language": self._current.get("language", "English Sub"),
+                        "headers": self._current.get("headers", {}),
                     },
                 )
                 last_heartbeat = now
             time.sleep(POLL_INTERVAL)
         self._ipc.close()
 
+    def _atexit_cleanup(self):
+        if self._stopped:
+            return
+        self._stopped = True
+        try:
+            self.stop()
+        except Exception:
+            pass
+
     def stop(self):
+        if self._stopped:
+            return
+        self._stopped = True
         self.notify_stop()
         self._active = False
         if self._channel is not None:
@@ -597,6 +814,11 @@ class WatchHost:
             except Exception:
                 pass
         self._rt.close()
+        try:
+            self._player.kill_active_player()
+        except Exception:
+            pass
+        self._ipc.close()
 
 
 class WatchGuest:
@@ -620,6 +842,12 @@ class WatchGuest:
         self._last_host_playing: Optional[bool] = None
         self._player = PlayerManager()
         self._active = False
+        self._stopped = False
+        self._last_seek_ts = 0.0
+        self._monitor_thread: Optional[threading.Thread] = None
+        self.username = _os_username()
+        self.members: Dict[str, str] = {}
+        atexit.register(self._atexit_cleanup)
 
     @property
     def is_active(self) -> bool:
@@ -634,11 +862,57 @@ class WatchGuest:
         self._channel.on_broadcast(event="*", callback=self._on_message)
         self._channel.subscribe()
         self._active = True
+        self._send_join()
+        if self._monitor_thread is None or not self._monitor_thread.is_alive():
+            self._monitor_thread = threading.Thread(
+                target=self._monitor_loop, daemon=True
+            )
+            self._monitor_thread.start()
         return True
+
+    def _send_join(self):
+        if self._channel is None:
+            return
+        try:
+            self._channel.send_broadcast(
+                EV_JOIN, {"sender": "guest", "username": self.username}
+            )
+        except Exception:
+            pass
+
+    def _monitor_loop(self):
+        last_ping = 0.0
+        while not self._stop.is_set() and self._active:
+            now = time.time()
+            if now - last_ping >= HEARTBEAT_INTERVAL:
+                if self._player_proc is not None and not self._ipc.connected:
+                    self._ensure_ipc()
+                elif self._player_proc is not None and not self._ipc.ping():
+                    self._ensure_ipc()
+                last_ping = now
+            time.sleep(POLL_INTERVAL)
+
+    def _ensure_ipc(self) -> bool:
+        """Reconnect a dropped IPC socket, retrying for up to
+        RECONNECT_TIMEOUT seconds. On success, re-request a full snapshot
+        from the host."""
+        deadline = time.time() + RECONNECT_TIMEOUT
+        while time.time() < deadline and not self._stop.is_set():
+            if self._ipc.connect(timeout=2.0):
+                self._resync_from_host()
+                return True
+            time.sleep(0.5)
+        return False
+
+    def _resync_from_host(self):
+        """Ask the host for a fresh full state snapshot after a reconnect."""
+        self._send_join()
 
     def _on_message(self, message: dict):
         event = message.get("event")
         payload = message.get("payload") or {}
+        if payload.get("sender") != SENDER_HOST and event in (EV_LOAD, EV_PLAY, EV_PAUSE, EV_SEEK, EV_HEARTBEAT, EV_STATE, EV_MEMBERS):
+            return
         if event == EV_LOAD:
             self._handle_load(payload)
         elif event == EV_PLAY:
@@ -649,6 +923,35 @@ class WatchGuest:
             self._apply_seek(payload.get("time"))
         elif event == EV_HEARTBEAT:
             self._handle_heartbeat(payload)
+        elif event == EV_STATE:
+            self._handle_state(payload)
+        elif event == EV_MEMBERS:
+            self._handle_members(payload)
+
+    def _handle_members(self, payload: dict):
+        prev = dict(self.members)
+        members = payload.get("members") or []
+        new_members = {}
+        host_name = str(payload.get("host") or "").strip()
+        for entry in members:
+            if not isinstance(entry, dict):
+                continue
+            name = str(entry.get("name") or "").strip()
+            if not name:
+                continue
+            role = str(entry.get("role") or ROLE_GUEST).strip() or ROLE_GUEST
+            new_members[name] = role
+        with self._state_lock:
+            self.members = new_members
+        for name, role in new_members.items():
+            if name not in prev:
+                label = f"{name} (Host)" if (name == host_name or role == ROLE_HOST) else f"{name} joined"
+                self._osd(f"{label}")
+                break
+        for name in prev:
+            if name not in new_members:
+                self._osd(f"{name} left")
+                break
 
     def _resolve_stream(self, payload: dict) -> Tuple[str, Dict, str]:
         title = payload.get("title", "")
@@ -722,6 +1025,12 @@ class WatchGuest:
         with self._state_lock:
             self._pending = dict(payload)
         def worker():
+            url = str(payload.get("url") or "")
+            headers = dict(payload.get("headers") or {})
+            if url:
+                self._launch_player(url, headers)
+                self._pending = {}
+                return
             try:
                 url, headers, provider = self._resolve_stream(payload)
             except Exception:
@@ -753,6 +1062,33 @@ class WatchGuest:
                 self._pending = {}
                 return
             self._launch_player(url, headers)
+            self._pending = {}
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _handle_state(self, payload: dict):
+        """Apply a full state snapshot from the host (used on join/reconnect).
+        Uses the host-provided stream URL if present, otherwise resolves."""
+        with self._state_lock:
+            self._pending = dict(payload)
+        if self._player_proc is not None:
+            threading.Thread(target=self._apply_pending, daemon=True).start()
+            return
+        url = str(payload.get("url") or "")
+        headers = dict(payload.get("headers") or {})
+        if url:
+            self._launch_player(url, headers)
+            self._pending = {}
+            return
+        def worker():
+            try:
+                resolved_url, resolved_headers, provider = self._resolve_stream(payload)
+            except Exception:
+                resolved_url, resolved_headers, provider = "", {}, {}
+            if not resolved_url:
+                self._pending = {}
+                return
+            self._launch_player(resolved_url, resolved_headers)
             self._pending = {}
 
         threading.Thread(target=worker, daemon=True).start()
@@ -815,6 +1151,7 @@ class WatchGuest:
             return
         threading.Thread(target=self._watch_player_exit, daemon=True).start()
         threading.Thread(target=self._apply_pending, daemon=True).start()
+        self._osd(f"Now playing: {self._watch_meta.get('title', '')}")
 
     def _watch_player_exit(self):
         proc = self._player_proc
@@ -853,6 +1190,7 @@ class WatchGuest:
             if pending:
                 t = pending.get("time")
                 if t is not None:
+                    self._last_seek_ts = time.time()
                     self._ipc.seek(float(t))
                 playing = pending.get("playing")
                 if playing is not None:
@@ -894,15 +1232,56 @@ class WatchGuest:
             return
         if playing is False:
             self._ipc.set_pause(True)
+            return
         guest_time = self._ipc.get_time_pos()
         if guest_time is None:
             return
-        if abs(guest_time - float(host_time)) > DRIFT_THRESHOLD:
-            self._ipc.seek(float(host_time))
+        now = time.time()
+        drift = float(host_time) - guest_time
+        if (
+            abs(drift) > SYNC_HARD_SEEK_THRESHOLD
+            and now - self._last_seek_ts >= SEEK_COOLDOWN
+        ):
+            self._last_seek_ts = now
+            threading.Thread(
+                target=lambda: self._ipc.seek(float(host_time)),
+                daemon=True,
+            ).start()
+            self._osd(f"Synced to host at {float(host_time):.0f}s")
+
+    def _osd(self, msg: str):
+        if self.player_kind == "vlc" or not self._ipc.connected:
+            return
+        try:
+            threading.Thread(
+                target=lambda: self._ipc.show_text(str(msg), 1500),
+                daemon=True,
+            ).start()
+        except Exception:
+            pass
+
+    def _atexit_cleanup(self):
+        if self._stopped:
+            return
+        self._stopped = True
+        try:
+            self.stop()
+        except Exception:
+            pass
 
     def stop(self):
+        if self._stopped:
+            return
+        self._stopped = True
         self._stop.set()
         self._active = False
+        if self._channel is not None:
+            try:
+                self._channel.send_broadcast(
+                    EV_LEAVE, {"sender": "guest", "username": self.username}
+                )
+            except Exception:
+                pass
         if self._player_proc is not None:
             try:
                 self._player_proc.kill()
