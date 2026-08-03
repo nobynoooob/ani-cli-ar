@@ -26,6 +26,8 @@ _GUEST_VOLUME_BINDINGS = (
 )
 
 class PlayerManager:
+    _vlc_version_cache: Optional[tuple] = None
+
     def __init__(self, rpc_manager=None, console=None):
         self.temp_mpv_path = None
         self.rpc_manager = rpc_manager
@@ -72,7 +74,7 @@ class PlayerManager:
             '--cache=yes',
             '--demuxer-max-bytes=150M',
             '--demuxer-max-back-bytes=64M',
-            '--demuxer-readahead-secs=20',
+            '--demuxer-readahead-secs=30',
             '--hwdec=auto-safe',
             '--sub-auto=fuzzy',
             '--force-window=yes',
@@ -96,6 +98,31 @@ class PlayerManager:
         mpv_args.append(url)
         return mpv_args
 
+    @classmethod
+    def _vlc_version(cls) -> Optional[tuple]:
+        """Return the installed VLC major.minor as a tuple, or None.
+
+        Cached after the first probe. Used to gate options that only exist on
+        certain VLC releases (e.g. ``--rc-quiet`` was dropped after VLC 2.x
+        and re-added in VLC 4.x)."""
+        if cls._vlc_version_cache is not None:
+            return cls._vlc_version_cache
+        cls._vlc_version_cache = None
+        try:
+            out = subprocess.run(
+                ["vlc", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=8.0,
+            ).stdout or ""
+            import re as _re
+            m = _re.search(r"vlc version (\d+)\.(\d+)", out)
+            if m:
+                cls._vlc_version_cache = (int(m.group(1)), int(m.group(2)))
+        except Exception:
+            cls._vlc_version_cache = None
+        return cls._vlc_version_cache
+
     def build_vlc_args(
         self,
         vlc_path: str,
@@ -108,7 +135,14 @@ class PlayerManager:
         """Build VLC arguments. rc_port enables the rc interface over TCP
         (used for Watch Together sync). With lock_controls, playback hotkeys
         are unbound so guests cannot pause/seek manually."""
-        vlc_args = [vlc_path, '--fullscreen', '--no-video-title-show']
+        vlc_args = [
+            vlc_path,
+            '--fullscreen',
+            '--no-video-title-show',
+            '--network-caching=5000',
+            '--live-caching=3000',
+            '--audio-time-stretch',
+        ]
         if title:
             vlc_args.append('--meta-title=' + title)
         if rc_port:
@@ -116,6 +150,11 @@ class PlayerManager:
                 '--extraintf=rc',
                 '--rc-host=127.0.0.1:' + str(rc_port),
             ]
+            # --rc-quiet exists only on VLC 4.x+; avoid an "unknown option"
+            # warning on earlier releases (dropped after VLC 2.x).
+            ver = self._vlc_version()
+            if ver and ver[0] >= 4:
+                vlc_args.append('--rc-quiet')
         else:
             vlc_args.append('--play-and-exit')
         if lock_controls:

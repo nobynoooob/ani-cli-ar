@@ -140,10 +140,14 @@ class ProviderManager:
             except asyncio.TimeoutError:
                 _log(f"[✗] {name} timed out after {_PROVIDER_TIMEOUT}s.\n")
                 self._report_error(f"{name} timed out after {_PROVIDER_TIMEOUT}s", context)
-            except Exception:
+                ProviderManager._log_debug(name, f"timed out after {_PROVIDER_TIMEOUT}s")
+            except Exception as exc:
                 _log(f"[✗] {name} errored, skipping to next provider.\n")
                 self._report_error(f"{name} raised an unexpected error", context,
                                    exc_info=sys.exc_info())
+                ProviderManager._log_debug(
+                    name, f"unexpected error: {type(exc).__name__}: {exc}"
+                )
 
         if lang_clean == "english":
             _log(
@@ -168,6 +172,15 @@ class ProviderManager:
             pass
 
     @staticmethod
+    def _log_debug(provider_name: str, message: str):
+        """Append one line of stream-resolution debug info to debug_streams.log."""
+        try:
+            with open("debug_streams.log", "a") as f:
+                f.write(f"Provider: {provider_name} | {message}\n")
+        except Exception:
+            pass
+
+    @staticmethod
     def _try_provider(
         scraper: BaseScraper, anime_title: str, episode_num, mode: str = "sub"
     ) -> Optional[Tuple[str, Dict]]:
@@ -185,12 +198,17 @@ class ProviderManager:
 
         try:
             results = scraper.search(anime_title)
-        except Exception:
+        except Exception as exc:
             ProviderManager._report_error("Scraper search failed", context,
                                           exc_info=sys.exc_info())
+            ProviderManager._log_debug(
+                scraper.name,
+                f"search() raised: {type(exc).__name__}: {exc}",
+            )
             return None
         if not results:
             ProviderManager._report_error("Scraper search returned no results", context)
+            ProviderManager._log_debug(scraper.name, "search() returned no results")
             return None
 
         anime_id = results[0]["id"]
@@ -199,14 +217,19 @@ class ProviderManager:
             if hasattr(scraper, "preferred_category"):
                 scraper.preferred_category = mode_clean
             eps = scraper.get_episodes(anime_id)
-        except Exception:
+        except Exception as exc:
             ProviderManager._report_error("Scraper episode list failed",
                                           dict(context, anime_id=str(anime_id)),
                                           exc_info=sys.exc_info())
+            ProviderManager._log_debug(
+                scraper.name,
+                f"get_episodes() raised: {type(exc).__name__}: {exc}",
+            )
             return None
         if not eps:
             ProviderManager._report_error("Scraper episode list returned no results",
                                           dict(context, anime_id=str(anime_id)))
+            ProviderManager._log_debug(scraper.name, "get_episodes() returned no results")
             return None
 
         target = str(int(float(episode_num)))
@@ -230,13 +253,21 @@ class ProviderManager:
 
         try:
             stream = scraper.get_stream_url(ep_id)
-        except Exception:
+        except Exception as exc:
             ProviderManager._report_error("Scraper stream resolution failed",
                                           dict(context, episode_id=str(ep_id)),
                                           exc_info=sys.exc_info())
+            ProviderManager._log_debug(
+                scraper.name,
+                f"get_stream_url() raised: {type(exc).__name__}: {exc}",
+            )
             return None
-        if stream.get("stream_url"):
-            return stream["stream_url"], stream.get("headers", {})
-        ProviderManager._report_error("Scraper returned no stream URL",
+        from .embeds import is_valid_stream_url
+        url = stream.get("stream_url")
+        is_valid = is_valid_stream_url(url)
+        ProviderManager._log_debug(scraper.name, f"URL: {url} | Valid: {is_valid}")
+        if is_valid:
+            return url, stream.get("headers", {})
+        ProviderManager._report_error("Scraper returned no valid stream URL",
                                       dict(context, episode_id=str(ep_id)))
         return None

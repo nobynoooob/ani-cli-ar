@@ -6,13 +6,36 @@ Cloudflare/JS challenges; `resolve_embed()` routes to Playwright when the
 plain HTTP pass fails.
 """
 import re
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/126.0.0.0 Safari/537.36"
 )
+
+# A valid stream link must be a clean http(s) URL. Raw JSON/dict metadata blobs
+# (flashvars, escaped ``{"url": ...}`` values) are identifiable by braces.
+_JSON_METADATA_CHARS = ("{", "}")
+
+
+def is_valid_stream_url(url: str) -> bool:
+    """Return True only for a clean, playable http(s) stream link.
+
+    Accepts any http(s) URL (with or without a ``.m3u8``/``.mp4`` extension,
+    including query strings, tokens and dynamic endpoints). Only rejects raw
+    player-metadata dicts/JSON blobs (which contain ``{``/``}``) and non-http
+    links so the caller can fall back to the next provider instead of launching
+    the player with garbage.
+    """
+    if not url or not isinstance(url, str):
+        return False
+    url = url.strip().strip('"').strip("'")
+    if not (url.startswith("http://") or url.startswith("https://")):
+        return False
+    if any(ch in url for ch in _JSON_METADATA_CHARS):
+        return False
+    return True
 
 _MEDIA_RE = re.compile(r'(https?://[^"\'<>\s]+\.(?:m3u8|mp4)[^"\'<>\s]*)', re.IGNORECASE)
 _FILE_RE = re.compile(r'file["\']?\s*[:=]\s*["\']([^"\']+)', re.IGNORECASE)
@@ -26,17 +49,31 @@ _HLS_MANIFEST_ESC_RE = re.compile(r'\\?&quot;hlsManifestUrl\\?&quot;:\s*\\?&quot
 _OK_QUALITY_RE = re.compile(r'\{"name"\s*:\s*"(?:hd|full|sd|mobile)"\s*,\s*"url"\s*:\s*"(https?://[^"\\]+)"', re.IGNORECASE)
 
 
+def _unescape(url: str) -> str:
+    url = url.replace("\\u0026", "&")
+    url = url.replace("\\&quot;", '"')
+    url = url.replace("&quot;", '"')
+    url = url.replace("\\&", "&")
+    url = url.replace("&amp;", "&")
+    url = url.replace("\\/", "/")
+    return url
+
+
 def extract_media_url(html: str) -> str:
     html = html or ""
+    candidates: List[str] = []
     for pat in (_HLS_MANIFEST_RE, _HLS_MANIFEST_ESC_RE, _OK_QUALITY_RE, _MEDIA_RE, _QUALITY_URL_RE, _SRC_RE, _FILE_RE):
-        m = pat.search(html)
-        if m:
-            url = m.group(1).strip().rstrip('"').rstrip("'")
-            url = url.replace("\\u0026", "&").replace("\\&quot;", '"').replace("&quot;", '"').replace("\\&", "&")
-            if url.startswith("http") and ".m3u8" in url:
-                return url
-            if url.startswith("http") and ".mp4" in url:
-                return url
+        for m in pat.finditer(html):
+            url = _unescape((m.group(1) or "").strip().rstrip('"').rstrip("'"))
+            if url and url not in candidates:
+                candidates.append(url)
+
+    # Prefer a clean HLS manifest, then any valid direct media link.
+    m3u8 = [u for u in candidates if ".m3u8" in u.lower()]
+    mp4 = [u for u in candidates if ".mp4" in u.lower()]
+    for pick in (m3u8 or []) + (mp4 or []):
+        if is_valid_stream_url(pick):
+            return pick
     return ""
 
 
@@ -52,6 +89,10 @@ def _resolve_via_browser(embed_url: str, ref_url: str) -> str:
         u = elem if isinstance(elem, str) else getattr(elem, "url", "")
         if isinstance(u, str) and (".m3u8" in u or ".mp4" in u) and u not in found:
             found.append(u)
+
+    def clean(url: str) -> str:
+        u = _unescape(url.strip().rstrip('"').rstrip("'"))
+        return u if is_valid_stream_url(u) else ""
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -87,7 +128,7 @@ def _resolve_via_browser(embed_url: str, ref_url: str) -> str:
         browser.close()
 
     if found:
-        return found[0]
+        return clean(found[0])
     return extract_media_url(content)
 
 

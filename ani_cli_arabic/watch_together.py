@@ -12,6 +12,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import uuid
 from typing import Any, Callable, Dict, Optional, Tuple
 
@@ -22,12 +23,19 @@ ROOM_CODE_LEN = 6
 MAX_MEMBERS = 8
 HEARTBEAT_INTERVAL = 3.0
 DRIFT_THRESHOLD = 1.5
-SYNC_HARD_SEEK_THRESHOLD = 2.0
+SYNC_HARD_SEEK_THRESHOLD = 2.5
 SEEK_BACKWARD_TOLERANCE = 2.0
 SEEK_FORWARD_TOLERANCE = 8.0
 POLL_INTERVAL = 0.5
 RECONNECT_TIMEOUT = 30.0
 SEEK_COOLDOWN = 2.0
+# --- Adaptive speed sync (3-zone) ---
+SYNC_DEADBAND = 0.2           # |drift| <= this: play at 1.0x
+SYNC_SPEED_BAND = 2.5         # |drift| > this: hard seek instead of speed tweak
+SYNC_MAX_CATCHUP = 0.15       # max speed bump above 1.0x for slow catch-up
+SYNC_AHEAD_SPEED = 0.95       # speed when the guest is ahead (let host catch up)
+SYNC_EWMA_ALPHA = 0.3         # EWMA smoothing factor for drift (0 < a <= 1)
+SYNC_MIN_SPEED_INTERVAL = 1.0 # min seconds between consecutive speed changes
 
 SENDER_HOST = "host"
 ROLE_HOST = "host"
@@ -114,10 +122,18 @@ class SupabaseRealtime:
             return True
         try:
             from supabase import create_async_client
-        except ImportError:
+        except ImportError as exc:
+            sys.stderr.write(
+                "[!] 'supabase' package not installed. Full traceback:\n"
+                f"{traceback.format_exc()}\n"
+            )
             return False
         url, key = _supabase_credentials()
         if not url or not key:
+            sys.stderr.write(
+                "[!] SUPABASE_URL / SUPABASE_KEY missing. Full traceback:\n"
+                f"{traceback.format_exc()}\n"
+            )
             return False
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(
@@ -125,8 +141,17 @@ class SupabaseRealtime:
         )
         self._thread.start()
         if not self._ready.wait(timeout=15.0):
+            sys.stderr.write(
+                "[!] Supabase Realtime connect timed out (15s). Full traceback:\n"
+                f"{traceback.format_exc()}\n"
+            )
             self.close()
             return False
+        if self._client is None:
+            sys.stderr.write(
+                "[!] Supabase Realtime failed to create client. Full traceback:\n"
+                f"{traceback.format_exc()}\n"
+            )
         return self._client is not None
 
     def _run(self, url: str, key: str):
@@ -146,6 +171,10 @@ class SupabaseRealtime:
             from supabase import create_async_client
             client = await create_async_client(url, key)
         except Exception:
+            sys.stderr.write(
+                "[!] Supabase create_async_client failed. Full traceback:\n"
+                f"{traceback.format_exc()}\n"
+            )
             self._client = None
             self._ready.set()
             return
@@ -187,6 +216,10 @@ class SupabaseRealtime:
         try:
             channel = self._client.channel(f"room:{code}")
         except Exception:
+            sys.stderr.write(
+                "[!] Creating realtime channel failed. Full traceback:\n"
+                f"{traceback.format_exc()}\n"
+            )
             return False
         self._channels[code] = channel
 
@@ -209,6 +242,11 @@ class SupabaseRealtime:
         try:
             await channel.subscribe()
         except Exception:
+            sys.stderr.write(
+                "[!] Realtime channel subscribe failed (websocket connect). "
+                "Full traceback:\n"
+                f"{traceback.format_exc()}\n"
+            )
             return False
         return True
 
@@ -220,6 +258,10 @@ class SupabaseRealtime:
             await ch.send_broadcast(event, payload)
             return True
         except Exception:
+            sys.stderr.write(
+                "[!] Realtime send_broadcast failed. Full traceback:\n"
+                f"{traceback.format_exc()}\n"
+            )
             return False
 
     async def _unsubscribe(self, code: str):
@@ -376,6 +418,10 @@ class MpvIpcClient:
     def set_pause(self, paused: bool):
         self.send_command(["set_property", "pause", bool(paused)])
 
+    def set_speed(self, speed: float):
+        """Set the mpv playback rate (used by adaptive speed sync)."""
+        self.send_command(["set_property", "speed", float(speed)])
+
     def seek(self, seconds: float):
         self.send_command(["set_property", "time-pos", float(seconds)])
 
@@ -516,6 +562,25 @@ class VlcIpcClient:
                 return "\n".join(lines[1:])
             return resp
 
+    def send_command(self, command: str, timeout: float = 0.05) -> bool:
+        """Send an rc command and drain its prompt without blocking long.
+
+        Used for fire-and-forget control (rate/seek) so the sync loop is never
+        stalled by VLC's ``> `` prompt. Drains the pending prompt with a short
+        timeout so it cannot corrupt the next ``request()`` read."""
+        with self._lock:
+            if self._sock is None:
+                return False
+            try:
+                self._send(command)
+            except OSError:
+                return False
+            try:
+                self._read_response(timeout)
+            except Exception:
+                pass
+            return True
+
     def get_time_pos(self) -> Optional[float]:
         resp = self.request("get_time") or ""
         for line in resp.splitlines():
@@ -545,8 +610,24 @@ class VlcIpcClient:
         if current != paused:
             self.request("pause")
 
-    def seek(self, seconds: float):
-        self.request(f"seek {int(seconds)}")
+    def set_speed(self, speed: float):
+        """Set the VLC playback rate via the rc interface (non-blocking).
+
+        Uses the rc ``rate`` command; safe for both VLC 3.x (``rate <factor>``)
+        and 4.x. Polling helpers like ``get_time_pos`` should not be mixed into
+        the same lock while a rate change is pending, so this is fire-and-forget.
+        """
+        self.send_command(f"rate {float(speed):.3f}")
+
+    def seek(self, seconds: float, relative: bool = False):
+        """Seek in VLC. Absolute by default (``seek <sec>``); pass
+        ``relative=True`` for a relative jump (``seek +<sec>`` / ``seek -<sec>``).
+        Executes via the non-blocking ``send_command`` so it never stalls the
+        sync loop."""
+        seconds = int(seconds)
+        cmd = f"seek +{seconds}" if (relative and seconds >= 0) else \
+              f"seek -{abs(seconds)}" if relative else f"seek {seconds}"
+        self.send_command(cmd)
 
     def ping(self) -> bool:
         """Check that the VLC rc socket is still alive. On failure, drop the
@@ -868,6 +949,7 @@ class WatchHost:
                         "url": self._current.get("url", ""),
                         "language": self._current.get("language", "English Sub"),
                         "headers": self._current.get("headers", {}),
+                        "sent": time.time(),
                     },
                 )
                 last_heartbeat = now
@@ -925,6 +1007,13 @@ class WatchGuest:
         self._active = False
         self._stopped = False
         self._last_seek_ts = 0.0
+        self._last_host_time: Optional[float] = None
+        self._last_host_playing: Optional[bool] = None
+        # --- Adaptive speed sync state ---
+        self._last_heartbeat_recv = 0.0
+        self._ewma_drift = 0.0
+        self._current_speed = 1.0
+        self._last_speed_ts = 0.0
         self._monitor_thread: Optional[threading.Thread] = None
         self.username = _os_username()
         self.members: Dict[str, str] = {}
@@ -1365,6 +1454,7 @@ class WatchGuest:
                 t = pending.get("time")
                 if t is not None:
                     self._last_seek_ts = time.time()
+                    self._apply_speed(1.0)
                     self._ipc.seek(float(t))
                 playing = pending.get("playing")
                 if playing is not None:
@@ -1375,6 +1465,7 @@ class WatchGuest:
     def _apply_pause(self, paused: bool):
         if not self._ipc.connected:
             return
+        self._apply_speed(1.0, force=True)
         threading.Thread(
             target=lambda: self._ipc.set_pause(bool(paused)), daemon=True
         ).start()
@@ -1384,6 +1475,7 @@ class WatchGuest:
             return
         if not self._ipc.connected:
             return
+        self._apply_speed(1.0, force=True)
         threading.Thread(
             target=lambda: self._ipc.seek(float(seconds)), daemon=True
         ).start()
@@ -1406,22 +1498,81 @@ class WatchGuest:
             return
         if playing is False:
             self._ipc.set_pause(True)
+            self._apply_speed(1.0)
             return
         guest_time = self._ipc.get_time_pos()
         if guest_time is None:
             return
+
+        # --- 1) Latency & RTT compensation ---
         now = time.time()
-        drift = float(host_time) - guest_time
-        if (
-            abs(drift) > SYNC_HARD_SEEK_THRESHOLD
-            and now - self._last_seek_ts >= SEEK_COOLDOWN
-        ):
-            self._last_seek_ts = now
-            threading.Thread(
-                target=lambda: self._ipc.seek(float(host_time)),
-                daemon=True,
-            ).start()
-            self._osd(f"Synced to host at {float(host_time):.0f}s")
+        rtt = 0.0
+        sent = payload.get("sent")
+        if isinstance(sent, (int, float)) and sent > 0:
+            rtt = max(0.0, now - sent)
+        latency = rtt / 2.0
+        elapsed_arrival = (
+            now - self._last_heartbeat_recv
+            if self._last_heartbeat_recv > 0 else 0.0
+        )
+        self._last_heartbeat_recv = now
+        target_time = float(host_time) + latency + elapsed_arrival
+
+        # --- 4) EWMA-smooth the drift so network spikes don't trigger seeks ---
+        raw_drift = target_time - guest_time
+        if self._ewma_drift == 0.0:
+            self._ewma_drift = raw_drift
+        else:
+            self._ewma_drift = (
+                SYNC_EWMA_ALPHA * raw_drift + (1.0 - SYNC_EWMA_ALPHA) * self._ewma_drift
+            )
+        drift = self._ewma_drift
+
+        # --- 2) Dynamic sync zones ---
+        if abs(drift) <= SYNC_DEADBAND:
+            # Deadband: perfectly in sync, play at 1.0x.
+            self._apply_speed(1.0)
+        elif drift > SYNC_DEADBAND and drift <= SYNC_SPEED_BAND:
+            # Member is behind: smoothly speed up to catch the host.
+            speed = 1.0 + min(drift * 0.05, SYNC_MAX_CATCHUP)
+            self._apply_speed(speed)
+        elif drift >= -SYNC_SPEED_BAND and drift < -SYNC_DEADBAND:
+            # Member is ahead: slow down so the host catches up.
+            self._apply_speed(SYNC_AHEAD_SPEED)
+        else:
+            # --- 3) Large drift: hard seek + reset speed ---
+            self._hard_seek(target_time, drift)
+
+    def _hard_seek(self, target_time: float, drift: float):
+        now = time.time()
+        if now - self._last_seek_ts < SEEK_COOLDOWN:
+            return
+        self._last_seek_ts = now
+        self._apply_speed(1.0, force=True)
+        self._ewma_drift = 0.0
+        threading.Thread(
+            target=lambda: self._ipc.seek(float(target_time)),
+            daemon=True,
+        ).start()
+        self._osd(f"Synced to host at {float(target_time):.0f}s")
+
+    def _apply_speed(self, speed: float, force: bool = False):
+        """Debounced speed set: only touch the player when the target rate
+        actually changes and enough time has passed since the last change.
+        ``force=True`` (explicit host Pause/Play/Seek or a hard seek) always
+        sends the command, bypassing the debounce and the cached-rate check."""
+        speed = float(speed)
+        if not force and abs(speed - self._current_speed) < 1e-6:
+            return
+        now = time.time()
+        if not force and now - self._last_speed_ts < SYNC_MIN_SPEED_INTERVAL:
+            return
+        self._last_speed_ts = now
+        self._current_speed = speed
+        threading.Thread(
+            target=lambda: self._ipc.set_speed(speed),
+            daemon=True,
+        ).start()
 
     def _osd(self, msg: str):
         if self.player_kind == "vlc" or not self._ipc.connected:
