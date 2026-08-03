@@ -19,6 +19,7 @@ from .config import SUPABASE_DEFAULT_KEY, SUPABASE_DEFAULT_URL
 from .player import PlayerManager
 
 ROOM_CODE_LEN = 6
+MAX_MEMBERS = 8
 HEARTBEAT_INTERVAL = 3.0
 DRIFT_THRESHOLD = 1.5
 SYNC_HARD_SEEK_THRESHOLD = 2.0
@@ -42,6 +43,10 @@ EV_JOIN = "JOIN"
 EV_LEAVE = "LEAVE"
 EV_STATE = "STATE"
 EV_MEMBERS = "MEMBERS"
+EV_STATUS = "STATUS"
+EV_KICK = "KICK"
+EV_CONTROL = "CONTROL"
+EV_TRANSFER = "TRANSFER_HOST"
 
 
 def _os_username() -> str:
@@ -56,6 +61,14 @@ def _os_username() -> str:
             break
     name = str(raw).strip().strip('"').strip("'")
     return name or "User"
+
+
+def _subprocess_no_window_flags():
+    """Return subprocess creation flags that suppress an extra console window
+    when spawning background helper processes on Windows (no-op elsewhere)."""
+    if sys.platform == "win32":
+        return getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    return 0
 
 
 def _socket_path(code: str) -> str:
@@ -188,7 +201,7 @@ class SupabaseRealtime:
                     pass
             return handler
 
-        for evt in (EV_LOAD, EV_PLAY, EV_PAUSE, EV_SEEK, EV_HEARTBEAT, EV_JOIN, EV_LEAVE, EV_STATE, EV_MEMBERS):
+        for evt in (EV_LOAD, EV_PLAY, EV_PAUSE, EV_SEEK, EV_HEARTBEAT, EV_JOIN, EV_LEAVE, EV_STATE, EV_MEMBERS, EV_STATUS, EV_KICK, EV_CONTROL, EV_TRANSFER):
             try:
                 channel.on_broadcast(event=evt, callback=make_handler())
             except Exception:
@@ -589,6 +602,8 @@ class WatchHost:
         self._stopped = False
         self.username = _os_username()
         self.members: Dict[str, str] = {self.username: ROLE_HOST}
+        self._member_status: Dict[str, dict] = {}
+        self._member_controls: Dict[str, bool] = {}
         atexit.register(self._atexit_cleanup)
 
     @property
@@ -632,14 +647,32 @@ class WatchHost:
 
     def _on_message(self, message: dict):
         """Host is the single authority: it ignores all incoming playback
-        control events. Only presence notifications (join/leave) are used,
-        for roster + OSD display purposes."""
+        control events. Only presence notifications (join/leave) and guest
+        status reports are used, for roster + OSD display purposes."""
         event = message.get("event")
         payload = message.get("payload") or {}
         if event == EV_JOIN:
             self._on_guest_joined(payload)
         elif event == EV_LEAVE:
             self._on_guest_left(payload)
+        elif event == EV_STATUS:
+            self._on_guest_status(payload)
+
+    def _on_guest_status(self, payload: dict):
+        """Track per-member sync status reported by guests (drift/buffering)
+        so the host can render live sync badges in the member manager."""
+        raw = str(payload.get("username") or "").strip()
+        if not raw or raw == self.username:
+            return
+        drift = payload.get("drift")
+        playing = payload.get("playing")
+        buffering = payload.get("buffering")
+        self._member_status[raw] = {
+            "drift": float(drift) if drift is not None else 0.0,
+            "playing": bool(playing) if playing is not None else None,
+            "buffering": bool(buffering) if buffering is not None else False,
+            "last_seen": time.time(),
+        }
 
     def _on_guest_joined(self, payload: dict):
         raw = str(payload.get("username") or _os_username()).strip() or "User"
@@ -664,6 +697,9 @@ class WatchHost:
         if not name or name == self.username or name not in self.members:
             return False
         if self.members.pop(name, None) is not None:
+            self._member_status.pop(name, None)
+            self._member_controls.pop(name, None)
+            self._broadcast(EV_KICK, {"name": name})
             self._broadcast_members()
             self._send_state()
             self._osd(f"{name} was kicked by host")
@@ -680,6 +716,51 @@ class WatchHost:
         self._send_state()
         self._osd(f"{name} promoted to co-host")
         return True
+
+    def toggle_member_control(self, name: str) -> bool:
+        """Host action: toggle whether a member may pause/seek locally.
+        Broadcasts the updated permission so the guest can unlock its player."""
+        name = str(name or "").strip()
+        if not name or name == self.username or name not in self.members:
+            return False
+        allowed = not bool(self._member_controls.get(name, False))
+        self._member_controls[name] = allowed
+        self._broadcast(EV_CONTROL, {"name": name, "allowed": allowed})
+        self._broadcast_members()
+        self._osd(f"{name} can {'now' if allowed else 'no longer'} control playback")
+        return True
+
+    def transfer_host(self, name: str) -> bool:
+        """Host action: hand the host role to another member. The current
+        host demotes itself to co-host and the target becomes host."""
+        name = str(name or "").strip()
+        if not name or name == self.username or name not in self.members:
+            return False
+        self.members[name] = ROLE_HOST
+        self.members[self.username] = ROLE_CO_HOST
+        self._broadcast(EV_TRANSFER, {"old_host": self.username, "new_host": name})
+        self._broadcast_members()
+        self._send_state()
+        self._osd(f"{name} is now the host")
+        return True
+
+    def member_sync_label(self, name: str) -> str:
+        """Best-effort live sync badge for a member (host view only).
+
+        Returns an emoji-prefixed label: 🟢 Synced, 🟡 Buffering,
+        🔴 +X.Xs drift, or "" when there is no fresh status report.
+        """
+        status = self._member_status.get(name)
+        if not status or name not in self.members or name == self.username:
+            return ""
+        if time.time() - status.get("last_seen", 0) > HEARTBEAT_INTERVAL * 3:
+            return ""
+        if status.get("buffering"):
+            return "🟡 Buffering"
+        drift = float(status.get("drift") or 0.0)
+        if abs(drift) > DRIFT_THRESHOLD:
+            return f"🔴 {'+' if drift > 0 else '-'}{abs(drift):.1f}s"
+        return "🟢 Synced"
 
     def _osd(self, msg: str):
         if self.player_kind == "vlc" or not self._ipc.connected:
@@ -847,6 +928,7 @@ class WatchGuest:
         self._monitor_thread: Optional[threading.Thread] = None
         self.username = _os_username()
         self.members: Dict[str, str] = {}
+        self._controls_allowed = False
         atexit.register(self._atexit_cleanup)
 
     @property
@@ -882,6 +964,7 @@ class WatchGuest:
 
     def _monitor_loop(self):
         last_ping = 0.0
+        last_status = 0.0
         while not self._stop.is_set() and self._active:
             now = time.time()
             if now - last_ping >= HEARTBEAT_INTERVAL:
@@ -890,7 +973,36 @@ class WatchGuest:
                 elif self._player_proc is not None and not self._ipc.ping():
                     self._ensure_ipc()
                 last_ping = now
+            if now - last_status >= HEARTBEAT_INTERVAL:
+                self._report_status()
+                last_status = now
             time.sleep(POLL_INTERVAL)
+
+    def _report_status(self):
+        """Periodically report local sync state to the host so it can render
+        live status badges (synced/buffering/drift) in the member manager."""
+        if self._channel is None:
+            return
+        drift = 0.0
+        playing = None
+        buffering = bool(self._player_proc is not None and not self._ipc.connected)
+        if self._ipc.connected:
+            guest_time = self._ipc.get_time_pos()
+            if guest_time is not None and self._last_host_time is not None:
+                drift = float(self._last_host_time) - float(guest_time)
+            playing = self._ipc.get_pause()
+            if playing is not None:
+                playing = bool(playing is False)
+        try:
+            self._channel.send_broadcast(EV_STATUS, {
+                "sender": "guest",
+                "username": self.username,
+                "drift": drift,
+                "playing": playing,
+                "buffering": buffering,
+            })
+        except Exception:
+            pass
 
     def _ensure_ipc(self) -> bool:
         """Reconnect a dropped IPC socket, retrying for up to
@@ -911,7 +1023,7 @@ class WatchGuest:
     def _on_message(self, message: dict):
         event = message.get("event")
         payload = message.get("payload") or {}
-        if payload.get("sender") != SENDER_HOST and event in (EV_LOAD, EV_PLAY, EV_PAUSE, EV_SEEK, EV_HEARTBEAT, EV_STATE, EV_MEMBERS):
+        if payload.get("sender") != SENDER_HOST and event in (EV_LOAD, EV_PLAY, EV_PAUSE, EV_SEEK, EV_HEARTBEAT, EV_STATE, EV_MEMBERS, EV_KICK, EV_CONTROL, EV_TRANSFER):
             return
         if event == EV_LOAD:
             self._handle_load(payload)
@@ -927,6 +1039,43 @@ class WatchGuest:
             self._handle_state(payload)
         elif event == EV_MEMBERS:
             self._handle_members(payload)
+        elif event == EV_KICK:
+            self._handle_kick(payload)
+        elif event == EV_CONTROL:
+            self._handle_control(payload)
+        elif event == EV_TRANSFER:
+            self._handle_transfer(payload)
+
+    def _handle_kick(self, payload: dict):
+        name = str(payload.get("name") or "").strip()
+        if name == self.username:
+            self._osd("You were kicked by the host")
+            threading.Thread(target=self._stop_playback, daemon=True).start()
+
+    def _handle_control(self, payload: dict):
+        name = str(payload.get("name") or "").strip()
+        if name != self.username:
+            return
+        self._controls_allowed = bool(payload.get("allowed"))
+        self._osd(
+            "Host granted you pause/seek control" if self._controls_allowed
+            else "Host locked your controls"
+        )
+
+    def _handle_transfer(self, payload: dict):
+        old_host = str(payload.get("old_host") or "").strip()
+        new_host = str(payload.get("new_host") or "").strip()
+        if new_host == self.username:
+            self._osd("You are now the host")
+        elif old_host == self.username:
+            self._osd("You transferred the host role")
+
+    def _stop_playback(self):
+        try:
+            if self._player_proc is not None:
+                self._player_proc.kill()
+        except Exception:
+            pass
 
     def _handle_members(self, payload: dict):
         prev = dict(self.members)
@@ -963,18 +1112,34 @@ class WatchGuest:
             return self._resolve_arabic(title, episode)
         return self._resolve_english(title, episode, mode)
 
+    @staticmethod
+    def _has_active_media(payload: dict) -> bool:
+        """Return True only when the payload describes a real episode the host
+        has started playing. Hosts broadcast room sync (state/members/heartbeat)
+        during join and lobby periods with no episode chosen yet; those must NOT
+        trigger a player launch or a provider resolution."""
+        if not isinstance(payload, dict):
+            return False
+        if str(payload.get("url") or "").strip():
+            return True
+        title = str(payload.get("title") or "").strip()
+        episode = payload.get("episode")
+        return bool(title and episode is not None and str(episode).strip())
+
     def _resolve_english(self, title: str, episode, mode: str) -> Tuple[str, Dict, str]:
         from .scrapers import ProviderManager
+        from .scrapers.provider_manager import normalize_provider
         from .settings import SettingsManager
 
         settings = SettingsManager()
-        preferred = settings.get("preferred_provider", "") or "auto"
+        preferred = normalize_provider(settings.get("preferred_provider", ""))
         import asyncio
 
-        pm = ProviderManager(preferred_provider=preferred if preferred else None)
+        pm = ProviderManager(preferred_provider=preferred if preferred and preferred != "auto" else None)
         url, headers, provider = asyncio.run(
             pm.resolve_stream(
-                title, episode, mode=mode, language="english", provider=preferred
+                title, episode, mode=mode, language="english", provider=preferred,
+                quiet=True,
             )
         )
         return url or "", headers or {}, provider or ""
@@ -1024,6 +1189,9 @@ class WatchGuest:
     def _handle_load(self, payload: dict):
         with self._state_lock:
             self._pending = dict(payload)
+        if not self._has_active_media(payload):
+            self._pending = {}
+            return
         def worker():
             url = str(payload.get("url") or "")
             headers = dict(payload.get("headers") or {})
@@ -1068,9 +1236,14 @@ class WatchGuest:
 
     def _handle_state(self, payload: dict):
         """Apply a full state snapshot from the host (used on join/reconnect).
-        Uses the host-provided stream URL if present, otherwise resolves."""
+        Uses the host-provided stream URL if present, otherwise resolves.
+        No player is launched from a background state sync when the host has
+        not actually selected an episode yet."""
         with self._state_lock:
             self._pending = dict(payload)
+        if not self._has_active_media(payload):
+            self._pending = {}
+            return
         if self._player_proc is not None:
             threading.Thread(target=self._apply_pending, daemon=True).start()
             return
@@ -1113,7 +1286,7 @@ class WatchGuest:
                 url,
                 headers=headers,
                 rc_port=self.rc_port,
-                lock_controls=True,
+                lock_controls=not self._controls_allowed,
             )
         else:
             mpv_path = self._player.get_mpv_path()
@@ -1122,7 +1295,7 @@ class WatchGuest:
                 url,
                 headers=headers,
                 ipc_socket=self.socket_path,
-                lock_controls=True,
+                lock_controls=not self._controls_allowed,
             )
         if self._player_proc is not None:
             try:
@@ -1135,6 +1308,7 @@ class WatchGuest:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 stdin=subprocess.DEVNULL,
+                creationflags=_subprocess_no_window_flags(),
             )
         except Exception:
             exc_type, exc_val, exc_tb = sys.exc_info()

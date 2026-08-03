@@ -126,8 +126,9 @@ class AniCliWrapper:
     def _fetch_english_stream(self, anime_title, episode_num, quality="1080p", dub=False, provider="auto"):
         import asyncio
         from .scrapers import ProviderManager
-        preferred = self.settings_manager.get('preferred_provider', '')
-        pm = ProviderManager(preferred_provider=preferred if preferred else None)
+        from .scrapers.provider_manager import normalize_provider
+        preferred = normalize_provider(self.settings_manager.get('preferred_provider', ''))
+        pm = ProviderManager(preferred_provider=preferred if preferred and preferred != "auto" else None)
 
         mode = "dub" if dub else "sub"
         url, headers, _ = asyncio.run(
@@ -140,7 +141,8 @@ class AniCliWrapper:
 
         if language != 'Arabic Sub':
             is_dub = (language == 'English Dub')
-            preferred = self.settings_manager.get('preferred_provider', '') or "auto"
+            from .scrapers.provider_manager import normalize_provider
+            preferred = normalize_provider(self.settings_manager.get('preferred_provider', ''))
             provider_choice = preferred.lower()
             label = "Auto-Test" if provider_choice == "auto" else provider_choice.capitalize()
             print(f"\033[1;34mFetching {language} stream via {label}...\033[0m")

@@ -1,6 +1,7 @@
 import base64
 import gzip
 import json
+import sys
 import threading
 import time
 from typing import Dict, List, Optional
@@ -71,6 +72,25 @@ def _block_heavy_resource(route):
 
 def _encode_pipe(payload: dict) -> str:
     return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+
+
+def _search_score(query: str, title: str) -> float:
+    q = (query or "").lower().strip()
+    t = (title or "").lower().strip()
+    if not q or not t:
+        return 0.0
+    if t == q:
+        return 1.0
+    if q in t or t in q:
+        return 0.9
+    q_words = set(q.split())
+    t_words = set(t.split())
+    if not q_words:
+        return 0.0
+    overlap = len(q_words & t_words)
+    if not overlap:
+        return 0.0
+    return overlap / len(q_words)
 
 
 def _decode_pipe(raw: str) -> dict:
@@ -148,6 +168,13 @@ class MiruroScraper(BaseScraper):
         return None
 
     def search(self, query: str) -> List[Dict]:
+        results = self._search_anilist(query)
+        if results:
+            return results
+        sys.stderr.write("[!] AniList search unavailable, falling back to miruro pipe search.\n")
+        return self._search_pipe(query)
+
+    def _search_anilist(self, query: str) -> List[Dict]:
         try:
             r = _SEARCH_CLIENT.post(
                 ANILIST_URL,
@@ -167,6 +194,41 @@ class MiruroScraper(BaseScraper):
                 }
                 for m in media if m.get("id")
             ]
+        except Exception:
+            return []
+
+    def _search_pipe(self, query: str) -> List[Dict]:
+        try:
+            payload = {
+                "path": "search",
+                "method": "GET",
+                "query": {"query": query},
+                "body": None,
+                "version": "0.1.0",
+            }
+            data = self._pipe_fetch(payload)
+            if not isinstance(data, list):
+                return []
+            scored = []
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                t = item.get("title") or {}
+                best_score = 0.0
+                best_title = ""
+                for key in ("romaji", "english", "native"):
+                    title = t.get(key) or ""
+                    score = _search_score(query, title)
+                    if score > best_score:
+                        best_score = score
+                        best_title = title
+                aid = item.get("id")
+                if not aid:
+                    continue
+                if best_score > 0.0:
+                    scored.append((best_score, best_title, str(aid)))
+            scored.sort(key=lambda x: x[0], reverse=True)
+            return [{"title": t, "id": a} for _, t, a in scored[:25]]
         except Exception:
             return []
 

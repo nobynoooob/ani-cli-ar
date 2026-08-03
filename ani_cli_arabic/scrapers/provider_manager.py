@@ -8,9 +8,33 @@ from .gogoanime import GogoAnimeScraper
 from .mkissa import MkissaScraper
 from .api_provider import ApiScraper
 from .miruro import MiruroScraper
+from .hianime import HiAnimeScraper
+from .allanime import AniThemeScraper
 
-ENGLISH_PROVIDERS = ["miruro", "api", "mkissa", "gogoanime"]
+ENGLISH_PROVIDERS = ["miruro", "hianime", "allanime", "api", "mkissa", "gogoanime"]
 ARABIC_PROVIDERS = ["arabic_api_primary", "arabic_api_backup"]
+
+# Sentinal values for the "Ask Every Time" provider preference. When the user
+# picks this in settings, playback prompts interactively per session.
+PROVIDER_ASK = "ask"
+PROVIDER_ASK_VALUES = {"ask", "ask_every_time", "ask every time"}
+
+
+def is_provider_ask(value) -> bool:
+    """True if the setting means 'Ask Every Time' (any normalized spelling)."""
+    return (value or "").strip().lower() in PROVIDER_ASK_VALUES
+
+
+def normalize_provider(value) -> str:
+    """Map a settings provider value to a safe provider choice (default 'auto').
+
+    The 'ask' sentinel never reaches the resolver chain directly: it is mapped
+    to 'auto' so callers that skip the interactive prompt fall back gracefully.
+    """
+    v = (value or "auto").strip().lower()
+    if v in PROVIDER_ASK_VALUES:
+        return "auto"
+    return v or "auto"
 
 _PROVIDER_ORDER = {
     "english": ENGLISH_PROVIDERS,
@@ -34,6 +58,8 @@ class ProviderManager:
 
     def _register_defaults(self):
         self.register("miruro", MiruroScraper())
+        self.register("hianime", HiAnimeScraper())
+        self.register("allanime", AniThemeScraper())
         self.register("api", ApiScraper())
         self.register("mkissa", MkissaScraper())
         self.register("gogoanime", GogoAnimeScraper())
@@ -57,6 +83,9 @@ class ProviderManager:
             for name in order:
                 if name != provider_clean and name in self._providers:
                     yield name, self._providers[name]
+            for name, scraper in self._providers.items():
+                if name != provider_clean and name not in order:
+                    yield name, scraper
             return
 
         if self._preferred and self._preferred in self._providers:
@@ -64,6 +93,9 @@ class ProviderManager:
         for name in order:
             if name != self._preferred and name in self._providers:
                 yield name, self._providers[name]
+        for name, scraper in self._providers.items():
+            if name != self._preferred and name not in order:
+                yield name, scraper
 
     async def resolve_stream(
         self,
@@ -72,6 +104,7 @@ class ProviderManager:
         mode: str = "sub",
         language: str = "english",
         provider: str = "auto",
+        quiet: bool = False,
     ) -> Tuple[Optional[str], Dict, Optional[str]]:
         lang_clean = (language or "english").lower()
         provider_clean = (provider or "auto").lower()
@@ -79,8 +112,12 @@ class ProviderManager:
         if lang_clean not in _PROVIDER_ORDER:
             lang_clean = "english"
 
+        def _log(msg: str):
+            if not quiet:
+                sys.stderr.write(msg)
+
         for name, scraper in self._get_ordered_providers(lang_clean, provider_clean):
-            sys.stderr.write(f"[?] Attempting provider: {name}...\n")
+            _log(f"[?] Attempting provider: {name}...\n")
             context = {
                 "anime": anime_title,
                 "episode": str(episode_num),
@@ -97,19 +134,19 @@ class ProviderManager:
                 )
                 if result:
                     url, headers = result
-                    sys.stderr.write(f"[✓] Stream found via {name}!\n")
+                    _log(f"[✓] Stream found via {name}!\n")
                     return url, headers, name
-                sys.stderr.write(f"[✗] {name} returned no stream.\n")
+                _log(f"[✗] {name} returned no stream.\n")
             except asyncio.TimeoutError:
-                sys.stderr.write(f"[✗] {name} timed out after {_PROVIDER_TIMEOUT}s.\n")
+                _log(f"[✗] {name} timed out after {_PROVIDER_TIMEOUT}s.\n")
                 self._report_error(f"{name} timed out after {_PROVIDER_TIMEOUT}s", context)
             except Exception:
-                sys.stderr.write(f"[✗] {name} errored, skipping to next provider.\n")
+                _log(f"[✗] {name} errored, skipping to next provider.\n")
                 self._report_error(f"{name} raised an unexpected error", context,
                                    exc_info=sys.exc_info())
 
         if lang_clean == "english":
-            sys.stderr.write(
+            _log(
                 f"No working English streams found for '{anime_title}' ep {episode_num}. "
                 "Please try another provider or check your network.\n"
             )

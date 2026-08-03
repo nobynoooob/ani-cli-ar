@@ -1,4 +1,5 @@
 import sys
+import os
 import atexit
 import re
 import time
@@ -27,6 +28,25 @@ from . import watch_together
 import shutil
 import argparse
 
+
+def _safe_terminal_size():
+    """Return a terminal size, falling back to a safe default in legacy
+    Windows consoles where os.get_terminal_size() may fail."""
+    try:
+        size = shutil.get_terminal_size()
+        if size.columns > 0 and size.lines > 0:
+            return size
+    except (OSError, ValueError):
+        pass
+    try:
+        import os as _os
+        size = _os.get_terminal_size()
+        if size.columns > 0 and size.lines > 0:
+            return size
+    except (OSError, ValueError):
+        pass
+    return shutil.get_terminal_size(fallback=(80, 24))
+
 class AniCliArApp:
     def __init__(self):
         self.ui = UIManager()
@@ -50,6 +70,7 @@ class AniCliArApp:
             formatter_class=argparse.RawTextHelpFormatter
         )
         parser.add_argument('-U', '--update', action='store_true', help="Self-update from PyPI via pip")
+        parser.add_argument('-t', '--test', action='store_true', help="Include pre-release/test versions when updating")
         parser.add_argument('-i', '--interactive', action='store_true', help="Force minimal interactive CLI mode")
         parser.add_argument('-v', '--version', action='store_true', help="Show version information")
         parser.add_argument('--sub', action='store_true', help="Override: use English Subtitled streams")
@@ -96,11 +117,20 @@ class AniCliArApp:
             else:
                 print(f"Updating ani-cli-ar...")
 
-            pip_cmd = [
-                sys.executable, "-m", "pip", "install",
-                "--upgrade", "ani-cli-ar",
-                "--break-system-packages",
-            ]
+            if args.test:
+                print("Checking for latest test/pre-release version...")
+                pip_cmd = [
+                    sys.executable, "-m", "pip", "install",
+                    "--upgrade", "--pre", "ani-cli-ar",
+                    "--break-system-packages",
+                ]
+            else:
+                print("Checking for stable release...")
+                pip_cmd = [
+                    sys.executable, "-m", "pip", "install",
+                    "--upgrade", "ani-cli-ar",
+                    "--break-system-packages",
+                ]
             result = subprocess.run(pip_cmd, capture_output=True, text=True)
             if result.returncode == 0:
                 print("Successfully updated ani-cli-ar!")
@@ -167,7 +197,7 @@ class AniCliArApp:
 
     def unified_loop(self, query=None):
         while True:
-            is_narrow = shutil.get_terminal_size().columns < 80
+            is_narrow = _safe_terminal_size().columns < 80
             
             if self.force_cli or is_narrow:
                 self.current_mode = "cli"
@@ -200,7 +230,7 @@ class AniCliArApp:
 
     def run_tui_mode(self, query=None):
         while True:
-            if '-i' not in sys.argv and shutil.get_terminal_size().columns < 80:
+            if '-i' not in sys.argv and _safe_terminal_size().columns < 80:
                 return "SWITCH_TO_CLI"
 
             self.ui.clear()
@@ -427,7 +457,10 @@ class AniCliArApp:
         self.ui.print(Align.center(panel))
 
     def handle_manage_members(self):
-        """M key: manage members submenu. Hosts can kick/promote guests."""
+        """M key: manage members submenu. Hosts can kick/promote/transfer or
+        toggle control for guests. Members are listed directly with a live
+        sync status badge next to each non-host member."""
+        from .watch_together import MAX_MEMBERS
         session = self.watch_host or self.watch_guest
         if session is None:
             self.ui.render_message(
@@ -438,12 +471,25 @@ class AniCliArApp:
             return
 
         is_host = self.watch_host is not None
-        roster = session.members or {}
+        host = self.watch_host
+
+        def member_display(name, role):
+            role_tag = {
+                "host": "Host",
+                "co-host": "Co-Host",
+                "guest": "Guest",
+            }.get(role, "Guest")
+            line = f"{name} ({role_tag})"
+            if is_host and role != "host" and host is not None:
+                badge = host.member_sync_label(name)
+                if badge:
+                    line = f"{name} ({role_tag}) {badge}"
+            return line
 
         def member_entries():
             return [
                 (name, role)
-                for name, role in roster.items()
+                for name, role in (session.members or {}).items()
             ]
 
         while True:
@@ -458,44 +504,50 @@ class AniCliArApp:
 
             items = []
             for name, role in entries:
-                role_tag = {
-                    "host": "Host",
-                    "co-host": "Co-Host",
-                    "guest": "Guest",
-                }.get(role, "Guest")
-                items.append(f"{name} ({role_tag})")
+                items.append((member_display(name, role), name, role))
+            items.append(("Close", None, None))
 
-            if is_host:
-                items.append("Kick a member...")
-                items.append("Promote a member...")
-            items.append("Close")
-
-            choice = self.ui.selection_menu(items, title=f"Manage Members — Room {session.code}")
+            choices = [label for label, _, _ in items]
+            title = f"Manage Members ({len(entries)}/{MAX_MEMBERS}) — Room {session.code}"
+            choice = self.ui.selection_menu(choices, title=title)
             if choice is None or choice == "Close":
                 return
 
-            if choice == "Kick a member...":
-                kickable = [n for n, r in member_entries() if n != session.username and r != "host"]
-                if not kickable:
-                    self.ui.render_message("Manage Members", "No members to kick.", "info")
-                    continue
-                target = self.ui.selection_menu(kickable, title="Kick Member")
-                if target is not None and self.watch_host is not None:
-                    self.watch_host.kick_member(target)
-                    self.ui.render_message("Manage Members", f"Kicked {target}.", "info")
-                continue
+            _, target_name, target_role = next(
+                (item for item in items if item[0] == choice), (None, None, None)
+            )
+            if target_name is None:
+                return
 
-            if choice == "Promote a member...":
-                promotable = [n for n, r in member_entries() if r == "guest"]
-                if not promotable:
-                    self.ui.render_message("Manage Members", "No guests to promote.", "info")
+            if is_host and host is not None and target_role != "host":
+                actions = [
+                    "👑 Transfer Host Role",
+                    "🔒 Toggle Control Permission",
+                    "👢 Kick Member",
+                    "↩️ Cancel",
+                ]
+                action = self.ui.selection_menu(actions, title=f"Actions — {target_name}")
+                if action is None or action == "↩️ Cancel":
                     continue
-                target = self.ui.selection_menu(promotable, title="Promote Member")
-                if target is not None and self.watch_host is not None:
-                    self.watch_host.promote_member(target)
-                    self.ui.render_message("Manage Members", f"Promoted {target} to co-host.", "info")
-                continue
 
+                if action == "👑 Transfer Host Role":
+                    if host.transfer_host(target_name):
+                        self.ui.render_message(
+                            "Manage Members", f"Transferred host role to {target_name}.", "info"
+                        )
+                    continue
+                if action == "🔒 Toggle Control Permission":
+                    if host.toggle_member_control(target_name):
+                        state = "granted" if host._member_controls.get(target_name) else "revoked"
+                        self.ui.render_message(
+                            "Manage Members", f"Playback control {state} for {target_name}.", "info"
+                        )
+                    continue
+                if action == "👢 Kick Member":
+                    if host.kick_member(target_name):
+                        self.ui.render_message("Manage Members", f"Kicked {target_name}.", "info")
+                    continue
+                continue
             return
 
     def _select_watch_player(self):
@@ -1015,11 +1067,30 @@ class AniCliArApp:
         quality_match = re.search(r"\b(\d{3,4}p)\b", quality_name or "")
         return quality_match.group(1) if quality_match else (quality_name or "auto")
 
+    def _resolve_provider_choice(self, preferred):
+        """Resolve the preferred_provider setting into a session provider choice.
+
+        If set to 'ask'/'Ask Every Time', present an interactive provider picker
+        (TUI mode only). In non-interactive contexts (CLI mode, forced CLI,
+        piped stdin) we fall back gracefully to the default 'auto' chain.
+        """
+        from .scrapers.provider_manager import get_provider_list, is_provider_ask
+        if not is_provider_ask(preferred):
+            return (preferred or "auto").lower()
+        if self.current_mode != "tui" or self.force_cli:
+            return "auto"
+        choices = ["auto"] + get_provider_list("english")
+        pick = self.ui.selection_menu(choices, title="Select Provider")
+        if pick is None:
+            return "auto"
+        return pick.strip().lower()
+
     def _fetch_english_stream(self, anime_title, episode_num, quality="1080p", dub=False, provider="auto"):
         import asyncio
         from .scrapers import ProviderManager
-        preferred = self.settings.get('preferred_provider', '')
-        pm = ProviderManager(preferred_provider=preferred if preferred else None)
+        from .scrapers.provider_manager import normalize_provider
+        preferred = normalize_provider(self.settings.get('preferred_provider', ''))
+        pm = ProviderManager(preferred_provider=preferred if preferred and preferred != "auto" else None)
 
         mode = "dub" if dub else "sub"
         try:
@@ -1352,7 +1423,7 @@ class AniCliArApp:
             return None
 
         preferred = self.settings.get('preferred_provider', '') or "auto"
-        provider_choice = preferred.lower()
+        provider_choice = self._resolve_provider_choice(preferred)
         label = "Auto-Test" if provider_choice == "auto" else provider_choice.capitalize()
 
         url_and_headers = self.ui.run_with_loading(
@@ -1512,6 +1583,20 @@ class AniCliArApp:
 
 
 def main():
+    # Windows console init: enable ANSI/VT processing and force UTF-8 output
+    # so the TUI renders correctly in CMD/PowerShell/Windows Terminal.
+    if os.name == "nt":
+        try:
+            import colorama
+            colorama.just_fix_windows_console()
+        except Exception:
+            pass
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
     home_dir = Path.home()
     db_dir = home_dir / ".ani-cli-arabic" / "database"
     db_dir.mkdir(parents=True, exist_ok=True)

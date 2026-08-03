@@ -7,6 +7,14 @@ import tempfile
 from typing import Optional
 from .utils import is_bundled
 
+
+def _no_window_flags():
+    """Return subprocess creation flags that suppress an extra console window
+    when spawning helper processes on Windows (no-op elsewhere)."""
+    if os.name == "nt":
+        return getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    return 0
+
 _GUEST_VOLUME_BINDINGS = (
     "VOLUME_UP add volume 5",
     "VOLUME_DOWN add volume -5",
@@ -179,8 +187,15 @@ class PlayerManager:
                 return local_mpv
 
             # Check system PATH
-            if shutil.which('mpv'):
-                return 'mpv'
+            if os.name == 'nt':
+                for name in ('mpv.exe', 'mpv'):
+                    found = shutil.which(name)
+                    if found:
+                        return found
+            else:
+                found = shutil.which('mpv')
+                if found:
+                    return found
             
             return 'mpv'
         
@@ -224,8 +239,12 @@ class PlayerManager:
         # Check MPV
         mpv_path = self.get_mpv_path()
         if mpv_path == 'mpv':
-            if shutil.which('mpv'):
-                 players['MPV'] = 'mpv'
+            if os.name == 'nt':
+                found = shutil.which('mpv.exe') or shutil.which('mpv')
+            else:
+                found = shutil.which('mpv')
+            if found:
+                players['MPV'] = found
         elif os.path.exists(mpv_path):
             players['MPV'] = mpv_path
 
@@ -378,6 +397,7 @@ class PlayerManager:
             vlc_args,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
+            creationflags=_no_window_flags(),
         )
         self._last_proc = proc
         try:
@@ -425,6 +445,7 @@ class PlayerManager:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
+            creationflags=_no_window_flags(),
         )
         self._last_proc = proc
         try:
@@ -464,5 +485,6 @@ class PlayerManager:
             mpc_args,
             check=False,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
+            stderr=subprocess.DEVNULL,
+            creationflags=_no_window_flags(),
         )

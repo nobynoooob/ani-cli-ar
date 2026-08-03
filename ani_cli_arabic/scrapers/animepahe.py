@@ -15,6 +15,14 @@ USER_AGENT = (
 )
 
 
+def _capture_json(resp, result: dict, target: str) -> None:
+    try:
+        if target in resp.url and resp.ok:
+            result["data"] = resp.json()
+    except Exception:
+        pass
+
+
 class AnimePaheScraper(BaseScraper):
 
     @property
@@ -30,7 +38,6 @@ class AnimePaheScraper(BaseScraper):
             from playwright.sync_api import sync_playwright
         except ImportError:
             return {}
-
         result = {}
         with sync_playwright() as p:
             browser = p.chromium.launch(
@@ -45,8 +52,7 @@ class AnimePaheScraper(BaseScraper):
             )
             page = ctx.new_page()
             page.on("response", lambda r: (
-                result.update({"data": r.json()})
-                if target in r.url and r.ok else None
+                _capture_json(r, result, target)
             ))
             try:
                 page.goto(url, wait_until="domcontentloaded", timeout=12000)
