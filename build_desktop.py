@@ -151,8 +151,57 @@ def _read_version():
     return __version__
 
 
+def _webview_platform_imports() -> list:
+    """pywebview backends are loaded dynamically at runtime (guilib.initialize
+    picks one per OS). Enumerate the platform modules that actually exist in
+    the installed pywebview so the bundle always carries the right one(s),
+    without PyInstaller warnings for modules that were dropped in newer
+    versions (e.g. ``edgehtml`` was replaced by ``edgechromium`` in pywebview
+    4.x)."""
+    installed = []
+    try:
+        import webview.platforms as platforms_pkg
+        pkg_dir = os.path.dirname(platforms_pkg.__file__)
+        installed = sorted(
+            name[:-3]
+            for name in os.listdir(pkg_dir)
+            if name.endswith(".py") and name != "__init__.py"
+        )
+    except Exception:
+        pass
+    preferred = [
+        "winforms", "edgehtml", "edgechromium", "mshtml", "win32",
+        "gtk", "gtk3", "qt", "cocoa", "cef",
+    ]
+    # Propose backends relevant to the current OS. The preferred list for that
+    # OS is kept verbatim (PyInstaller merely warns on a missing hidden import,
+    # e.g. edgehtml on pywebview >=4 where it was renamed to edgechromium),
+    # then whatever the package actually ships is appended so nothing installed
+    # is left out.
+    if os.name == "nt":
+        platform_names = ("winforms", "edgehtml", "edgechromium", "mshtml", "win32", "cef")
+    elif sys.platform == "darwin":
+        platform_names = ("cocoa", "qt", "cef")
+    else:
+        platform_names = ("gtk", "gtk3", "qt", "cef")
+    preferred_matches = [n for n in preferred if n in platform_names]
+    names = list(dict.fromkeys(preferred_matches + [n for n in installed if n in platform_names]))
+    return [f"webview.platforms.{name}" for name in names]
+
+
+def _webview_runtime_imports() -> list:
+    """pythonnet/clr is required by pywebview's Windows (winforms) backend and
+    is only present on that platform. ``hook-clr`` in hooks-contrib then picks
+    up the native ``Python.Runtime.dll`` automatically."""
+    if os.name != "nt":
+        return []
+    return ["clr", "clr_loader", "pythonnet"]
+
+
 def _hidden_imports() -> list:
     """Modules imported lazily/dynamically that static analysis misses."""
+    _platforms = _webview_platform_imports()
+    _win_runtime = _webview_runtime_imports()
     return [
         # package modules
         f"{PKG}.api", f"{PKG}.app", f"{PKG}.cli", f"{PKG}.config",
@@ -168,11 +217,11 @@ def _hidden_imports() -> list:
         f"{PKG}.scrapers.gogoanime", f"{PKG}.scrapers.mkissa",
         f"{PKG}.scrapers.embeds", f"{PKG}.scrapers.provider_manager",
         # pywebview backends (loaded dynamically at runtime)
-        "webview", "webview.platforms", "webview.platforms.gtk",
-        "webview.platforms.gtk3", "webview.platforms.qt",
-        "webview.platforms.edgechromium", "webview.platforms.mshtml",
-        "webview.platforms.cef", "webview.platforms.cocoa",
-        "webview.platforms.winforms",
+        * _platforms,
+        * _win_runtime,
+        # pywebview HTTP server / JS bridge deps (imported lazily)
+        "webview", "webview.platforms", "webview.http", "bottle",
+        "proxy_tools", "typing_extensions",
         # stream extraction / providers
         "playwright", "playwright.sync_api", "playwright.async_api",
         "httpx", "cryptography", "rich", "rich.console", "rich.panel",
@@ -186,10 +235,20 @@ def _hidden_imports() -> list:
     ]
 
 
+def _collect_all() -> list:
+    """Modules that must be bundled *wholesale* (data + binaries + submodules).
+    Playwright's node driver lives in ``playwright/driver/`` and is required
+    at runtime to spawn the browser — ``collect-submodules`` alone misses it."""
+    return ["playwright"]
+
+
 def _collect_submodules() -> list:
     """Modules that ship many submodules we want to bundle wholesale."""
-    mods = ["webview", "playwright", "rich", "httpx", "websockets"]
-    if os.name != "nt":
+    mods = ["webview", "rich", "httpx", "websockets"]
+    if os.name == "nt":
+        mods.append("clr_loader")
+        mods.append("pythonnet")
+    else:
         mods.append("realtime")
     return mods
 
@@ -270,7 +329,11 @@ def build():
 
     # PyInstaller --add-data/--add-binary separator differs between OS families.
     sep = ";" if os.name == "nt" else ":"
-    add_data = [f"{ui_dir}{sep}{PKG}/ui"]
+    # Use os.fspath() so Windows drive-letter/backslash paths are passed to
+    # PyInstaller verbatim (no accidental forward-slash rewrites or doubled
+    # backslashes in the spec we later attach to the bundle).
+    ui_dir_str = os.fspath(ui_dir)
+    add_data = [f"{ui_dir_str}{sep}{PKG}/ui"]
     add_binaries = []
 
     # ----- mpv bundling -----------------------------------------------------
@@ -282,7 +345,7 @@ def build():
     elif args.bundle_mpv:
         mpv_dir = _find_mpv_dir()
     if mpv_dir:
-        add_binaries.append(f"{mpv_dir}{sep}{MPV_DEST}")
+        add_binaries.append(f"{os.fspath(mpv_dir)}{sep}{MPV_DEST}")
         print(f"[*] Bundling mpv from: {mpv_dir}")
 
     # ----- Playwright Chromium bundling -------------------------------------
@@ -294,7 +357,7 @@ def build():
     elif args.bundle_browser:
         browser_dir = _find_browser_dir()
     if browser_dir:
-        add_data.append(f"{browser_dir}{sep}{BROWSER_DEST}")
+        add_data.append(f"{os.fspath(browser_dir)}{sep}{BROWSER_DEST}")
         hook = _create_browser_hook()
         print(f"[*] Bundling Playwright browsers from: {browser_dir}")
 
@@ -321,6 +384,8 @@ def build():
         cmd += ["--hidden-import", mod]
     for mod in _collect_submodules():
         cmd += ["--collect-submodules", mod]
+    for mod in _collect_all():
+        cmd += ["--collect-all", mod]
     for mod in _excludes():
         cmd += ["--exclude-module", mod]
     if icon:
