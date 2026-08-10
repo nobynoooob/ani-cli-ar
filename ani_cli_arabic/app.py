@@ -1,4 +1,5 @@
 import sys
+import os
 import atexit
 import re
 import time
@@ -27,6 +28,25 @@ from . import watch_together
 import shutil
 import argparse
 
+
+def _safe_terminal_size():
+    """Return a terminal size, falling back to a safe default in legacy
+    Windows consoles where os.get_terminal_size() may fail."""
+    try:
+        size = shutil.get_terminal_size()
+        if size.columns > 0 and size.lines > 0:
+            return size
+    except (OSError, ValueError):
+        pass
+    try:
+        import os as _os
+        size = _os.get_terminal_size()
+        if size.columns > 0 and size.lines > 0:
+            return size
+    except (OSError, ValueError):
+        pass
+    return shutil.get_terminal_size(fallback=(80, 24))
+
 class AniCliArApp:
     def __init__(self):
         self.ui = UIManager()
@@ -50,9 +70,9 @@ class AniCliArApp:
             formatter_class=argparse.RawTextHelpFormatter
         )
         parser.add_argument('-U', '--update', action='store_true', help="Self-update from PyPI via pip")
-        parser.add_argument('-t', '--test', action='store_true',
-                            help="With -U/--update: include pre-release (beta) builds via pip --pre")
+        parser.add_argument('-t', '--test', action='store_true', help="Include pre-release/test versions when updating")
         parser.add_argument('-i', '--interactive', action='store_true', help="Force minimal interactive CLI mode")
+        parser.add_argument('--gui', action='store_true', help="Launch the desktop GUI (requires pywebview)")
         parser.add_argument('-v', '--version', action='store_true', help="Show version information")
         parser.add_argument('--sub', action='store_true', help="Override: use English Subtitled streams")
         parser.add_argument('--dub', action='store_true', help="Override: use English Dubbed streams")
@@ -63,6 +83,11 @@ class AniCliArApp:
         parser.add_argument('query', nargs='*', help="Anime name to search for")
         
         args = parser.parse_args()
+
+        if args.gui:
+            from .gui import run_gui
+            run_gui()
+            sys.exit(0)
 
         if args.stats:
             from .stats import render_stats
@@ -79,72 +104,39 @@ class AniCliArApp:
             import urllib.request
             import subprocess
             from .version import __version__
-            from packaging.version import Version, InvalidVersion
 
-            def _fetch_pypi():
-                try:
-                    resp = urllib.request.urlopen(
-                        "https://pypi.org/pypi/ani-cli-ar/json", timeout=10
-                    )
-                    return json.load(resp)
-                except Exception:
-                    return None
-
-            latest = None
-            if args.test:
-                data = _fetch_pypi()
-                if data is not None:
-                    latest = data.get("info", {}).get("version")
-            else:
-                data = _fetch_pypi()
-                if data is not None:
-                    stable = []
-                    releases = data.get("releases", {})
-                    for ver_str in releases:
-                        try:
-                            ver = Version(ver_str)
-                        except InvalidVersion:
-                            continue
-                        if ver.is_prerelease:
-                            continue
-                        files = releases.get(ver_str) or []
-                        if not files or all(f.get("yanked") for f in files):
-                            continue
-                        stable.append(ver)
-                    if stable:
-                        latest = str(max(stable))
-                    else:
-                        info_ver = data.get("info", {}).get("version")
-                        if info_ver and not Version(info_ver).is_prerelease:
-                            latest = info_ver
-
-            if latest is None:
+            try:
+                resp = urllib.request.urlopen(
+                    "https://pypi.org/pypi/ani-cli-ar/json", timeout=10
+                )
+                latest = json.load(resp)["info"]["version"]
+            except Exception:
                 print("Failed to check latest version. Trying update anyway...")
+                latest = None
 
             if latest and latest == __version__:
                 print(f"ani-cli-ar is already up to date! (v{__version__})")
                 sys.exit(0)
 
             if latest:
-                try:
-                    is_downgrade = Version(latest) < Version(__version__)
-                except InvalidVersion:
-                    is_downgrade = False
-                if is_downgrade:
-                    print(f"Reverting ani-cli-ar from v{__version__} to stable v{latest}...")
-                else:
-                    print(f"Updating ani-cli-ar from v{__version__} to v{latest}...")
+                print(f"Updating ani-cli-ar from v{__version__} to v{latest}...")
             else:
                 print(f"Updating ani-cli-ar...")
 
-            pip_cmd = [sys.executable, "-m", "pip", "install", "--upgrade"]
             if args.test:
-                pip_cmd += ["--pre", "ani-cli-ar"]
-            elif latest:
-                pip_cmd += ["--force-reinstall", f"ani-cli-ar=={latest}"]
+                print("Checking for latest test/pre-release version...")
+                pip_cmd = [
+                    sys.executable, "-m", "pip", "install",
+                    "--upgrade", "--pre", "ani-cli-ar",
+                    "--break-system-packages",
+                ]
             else:
-                pip_cmd.append("ani-cli-ar")
-            pip_cmd.append("--break-system-packages")
+                print("Checking for stable release...")
+                pip_cmd = [
+                    sys.executable, "-m", "pip", "install",
+                    "--upgrade", "ani-cli-ar",
+                    "--break-system-packages",
+                ]
             result = subprocess.run(pip_cmd, capture_output=True, text=True)
             if result.returncode == 0:
                 print("Successfully updated ani-cli-ar!")
@@ -211,7 +203,7 @@ class AniCliArApp:
 
     def unified_loop(self, query=None):
         while True:
-            is_narrow = shutil.get_terminal_size().columns < 80
+            is_narrow = _safe_terminal_size().columns < 80
             
             if self.force_cli or is_narrow:
                 self.current_mode = "cli"
@@ -244,7 +236,7 @@ class AniCliArApp:
 
     def run_tui_mode(self, query=None):
         while True:
-            if '-i' not in sys.argv and shutil.get_terminal_size().columns < 80:
+            if '-i' not in sys.argv and _safe_terminal_size().columns < 80:
                 return "SWITCH_TO_CLI"
 
             self.ui.clear()
@@ -281,14 +273,14 @@ class AniCliArApp:
                 self.ui.print(Align.center(Text.from_markup("Discord Rich Presence [dim](disabled)[/dim]", style="dim")))
             
             if self.watch_host is not None:
-                self.ui.print(Align.center(Text.from_markup(f"Watch Together: [bold green]Hosting Room {self.watch_host.code}[/bold green]", style="secondary")))
+                self._render_watch_status(self.watch_host)
             elif self.watch_guest is not None:
-                self.ui.print(Align.center(Text.from_markup(f"Watch Together: [bold yellow]Joined Room {self.watch_guest.code} (syncing)[/bold yellow]", style="secondary")))
+                self._render_watch_status(self.watch_guest)
             
             self.ui.print()
 
             keybinds_panel = Panel(
-                Text("T: Trending | P: Popular | G: Genres | S: Studios | L: History | F: Favorites | W: Watch Together | C: Settings | Q: Quit", style="info", justify="center"),
+                Text("T: Trending | P: Popular | G: Genres | S: Studios | L: History | F: Favorites | W: Watch Together | M: Manage Members | C: Settings | Q: Quit", style="info", justify="center"),
                 box=HEAVY,
                 border_style=COLOR_BORDER
             )
@@ -362,6 +354,9 @@ class AniCliArApp:
             elif query == 'w':
                 self.handle_watch_together()
                 continue
+            elif query == 'm':
+                self.handle_manage_members()
+                continue
             elif query == 'a':
                 self.ui.show_credits()
                 continue
@@ -420,6 +415,146 @@ class AniCliArApp:
             "Session stopped.",
             "info",
         )
+
+    def _render_watch_status(self, session):
+        """Render the room context line plus minimalistic profile modules for
+        each active member (host vs guest vs co-host color coded)."""
+        is_host = self.watch_host is not None
+        code = session.code
+        host_name = session.username if is_host else ""
+        for name, role in (session.members or {}).items():
+            if role == "host":
+                host_name = name
+                break
+        if is_host:
+            room_line = f"Watch Together: [bold green]Hosting Room {code}[/bold green] [dim]| Host: {host_name}[/dim]"
+        else:
+            room_line = f"Watch Together: [bold yellow]Joined Room {code}[/bold yellow] [dim](syncing)[/dim] [dim]| Host: {host_name}[/dim]"
+        self.ui.print(Align.center(Text.from_markup(room_line, style="secondary")))
+
+        roster = session.members or {}
+        if not roster:
+            self.ui.print(Align.center(Text.from_markup("[dim]No other members yet.[/dim]", style="secondary")))
+            return
+
+        markers = {
+            "host": ("●", "bold green", " (Host)"),
+            "co-host": ("◆", "bold cyan", " (Co-Host)"),
+            "guest": ("○", "bold yellow", ""),
+        }
+        profile_lines = Text()
+        first = True
+        for name, role in roster.items():
+            marker, color, suffix = markers.get(role, markers["guest"])
+            if not first:
+                profile_lines.append("   ", style="dim")
+            profile_lines.append(f"{marker} ", style=color)
+            profile_lines.append(name, style=color + " bold")
+            if suffix:
+                profile_lines.append(suffix, style=color)
+            first = False
+        panel = Panel(
+            Align.center(profile_lines),
+            title=Text("ROOM MEMBERS", style="title"),
+            box=HEAVY,
+            border_style=COLOR_BORDER,
+            padding=(0, 2),
+        )
+        self.ui.print(Align.center(panel))
+
+    def handle_manage_members(self):
+        """M key: manage members submenu. Hosts can kick/promote/transfer or
+        toggle control for guests. Members are listed directly with a live
+        sync status badge next to each non-host member."""
+        from .watch_together import MAX_MEMBERS
+        session = self.watch_host or self.watch_guest
+        if session is None:
+            self.ui.render_message(
+                "Manage Members",
+                "You are not in a Watch Together session.\n\nPress W to host or join a room first.",
+                "info",
+            )
+            return
+
+        is_host = self.watch_host is not None
+        host = self.watch_host
+
+        def member_display(name, role):
+            role_tag = {
+                "host": "Host",
+                "co-host": "Co-Host",
+                "guest": "Guest",
+            }.get(role, "Guest")
+            line = f"{name} ({role_tag})"
+            if is_host and role != "host" and host is not None:
+                badge = host.member_sync_label(name)
+                if badge:
+                    line = f"{name} ({role_tag}) {badge}"
+            return line
+
+        def member_entries():
+            return [
+                (name, role)
+                for name, role in (session.members or {}).items()
+            ]
+
+        while True:
+            entries = member_entries()
+            if not entries:
+                self.ui.render_message(
+                    "Manage Members",
+                    "No members in the room yet.",
+                    "info",
+                )
+                return
+
+            items = []
+            for name, role in entries:
+                items.append((member_display(name, role), name, role))
+            items.append(("Close", None, None))
+
+            choices = [label for label, _, _ in items]
+            title = f"Manage Members ({len(entries)}/{MAX_MEMBERS}) — Room {session.code}"
+            choice = self.ui.selection_menu(choices, title=title)
+            if choice is None or choice == "Close":
+                return
+
+            _, target_name, target_role = next(
+                (item for item in items if item[0] == choice), (None, None, None)
+            )
+            if target_name is None:
+                return
+
+            if is_host and host is not None and target_role != "host":
+                actions = [
+                    "👑 Transfer Host Role",
+                    "🔒 Toggle Control Permission",
+                    "👢 Kick Member",
+                    "↩️ Cancel",
+                ]
+                action = self.ui.selection_menu(actions, title=f"Actions — {target_name}")
+                if action is None or action == "↩️ Cancel":
+                    continue
+
+                if action == "👑 Transfer Host Role":
+                    if host.transfer_host(target_name):
+                        self.ui.render_message(
+                            "Manage Members", f"Transferred host role to {target_name}.", "info"
+                        )
+                    continue
+                if action == "🔒 Toggle Control Permission":
+                    if host.toggle_member_control(target_name):
+                        state = "granted" if host._member_controls.get(target_name) else "revoked"
+                        self.ui.render_message(
+                            "Manage Members", f"Playback control {state} for {target_name}.", "info"
+                        )
+                    continue
+                if action == "👢 Kick Member":
+                    if host.kick_member(target_name):
+                        self.ui.render_message("Manage Members", f"Kicked {target_name}.", "info")
+                    continue
+                continue
+            return
 
     def _select_watch_player(self):
         players = self.player.get_available_players()
@@ -938,11 +1073,30 @@ class AniCliArApp:
         quality_match = re.search(r"\b(\d{3,4}p)\b", quality_name or "")
         return quality_match.group(1) if quality_match else (quality_name or "auto")
 
+    def _resolve_provider_choice(self, preferred):
+        """Resolve the preferred_provider setting into a session provider choice.
+
+        If set to 'ask'/'Ask Every Time', present an interactive provider picker
+        (TUI mode only). In non-interactive contexts (CLI mode, forced CLI,
+        piped stdin) we fall back gracefully to the default 'auto' chain.
+        """
+        from .scrapers.provider_manager import get_provider_list, is_provider_ask
+        if not is_provider_ask(preferred):
+            return (preferred or "auto").lower()
+        if self.current_mode != "tui" or self.force_cli:
+            return "auto"
+        choices = ["auto"] + get_provider_list("english")
+        pick = self.ui.selection_menu(choices, title="Select Provider")
+        if pick is None:
+            return "auto"
+        return pick.strip().lower()
+
     def _fetch_english_stream(self, anime_title, episode_num, quality="1080p", dub=False, provider="auto"):
         import asyncio
         from .scrapers import ProviderManager
-        preferred = self.settings.get('preferred_provider', '')
-        pm = ProviderManager(preferred_provider=preferred if preferred else None)
+        from .scrapers.provider_manager import normalize_provider
+        preferred = normalize_provider(self.settings.get('preferred_provider', ''))
+        pm = ProviderManager(preferred_provider=preferred if preferred and preferred != "auto" else None)
 
         mode = "dub" if dub else "sub"
         try:
@@ -1193,7 +1347,13 @@ class AniCliArApp:
                         rc_port = self.watch_host.rc_port
                     else:
                         ipc_socket = self.watch_host.socket_path
-                    self.watch_host.notify_load(selected_anime.title_en, selected_ep.display_num, "Arabic Sub")
+                    self.watch_host.notify_load(
+                        selected_anime.title_en,
+                        selected_ep.display_num,
+                        "Arabic Sub",
+                        url=direct_url,
+                        headers={},
+                    )
                 
                 watch_start = time.time()
                 monitor.set_activity("watching", selected_anime.title_en, str(selected_ep.display_num))
@@ -1269,7 +1429,7 @@ class AniCliArApp:
             return None
 
         preferred = self.settings.get('preferred_provider', '') or "auto"
-        provider_choice = preferred.lower()
+        provider_choice = self._resolve_provider_choice(preferred)
         label = "Auto-Test" if provider_choice == "auto" else provider_choice.capitalize()
 
         url_and_headers = self.ui.run_with_loading(
@@ -1339,6 +1499,8 @@ class AniCliArApp:
                 selected_anime.title_en,
                 selected_ep.display_num,
                 "English Dub" if dub else "English Sub",
+                url=direct_url,
+                headers=stream_headers,
             )
 
         watch_start = time.time()
@@ -1427,6 +1589,20 @@ class AniCliArApp:
 
 
 def main():
+    # Windows console init: enable ANSI/VT processing and force UTF-8 output
+    # so the TUI renders correctly in CMD/PowerShell/Windows Terminal.
+    if os.name == "nt":
+        try:
+            import colorama
+            colorama.just_fix_windows_console()
+        except Exception:
+            pass
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
     home_dir = Path.home()
     db_dir = home_dir / ".ani-cli-arabic" / "database"
     db_dir.mkdir(parents=True, exist_ok=True)

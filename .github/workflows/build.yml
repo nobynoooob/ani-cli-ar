@@ -23,7 +23,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e .
-          pip install pyinstaller
+          pip install pywebview pyinstaller
 
       - name: Install Playwright browsers
         run: |
@@ -31,28 +31,56 @@ jobs:
 
       - name: Download and bundle mpv
         run: |
-          $mpvUrl = "https://sourceforge.net/projects/mpv-player-windows/files/64bit/mpv-x86_64-20250119.7z/download"
-          curl -L -o mpv.7z $mpvUrl
-          7z x mpv.7z -ompv_bundle
-          $mpvExe = Get-ChildItem -Recurse -Filter "mpv.exe" -Path "mpv_bundle" | Select-Object -First 1
-          if ($mpvExe) {
-            Copy-Item $mpvExe.FullName -Destination "mpv/"
-            Write-Host "mpv.exe bundled successfully"
+          $mpvUrls = @(
+            "https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20260307/mpv-x86_64-v3-20260307-git-f9190e5.7z",
+            "https://sourceforge.net/projects/mpv-player-windows/files/64bit/mpv-x86_64-20250119.7z/download"
+          )
+          $downloaded = $false
+          foreach ($mpvUrl in $mpvUrls) {
+            if (Test-Path mpv.7z) { Remove-Item mpv.7z -Force }
+            curl.exe -L --max-time 300 -o mpv.7z $mpvUrl 2>$null
+            if ((Test-Path mpv.7z) -and ((Get-Item mpv.7z).Length -gt 1MB)) { $downloaded = $true; break }
+          }
+          if ($downloaded) {
+            7z x mpv.7z -ompv_bundle -y | Out-Null
+            $mpvExe = Get-ChildItem -Recurse -Filter "mpv.exe" -Path "mpv_bundle" | Select-Object -First 1
+            if ($mpvExe) {
+              New-Item -ItemType Directory -Force -Path "mpv" | Out-Null
+              Copy-Item "$($mpvExe.DirectoryName)\*" -Destination "mpv/" -Recurse
+              Write-Host "mpv bundled successfully"
+            }
+          } else {
+            Write-Host "WARNING: could not download mpv; will build without bundled mpv"
+            New-Item -ItemType Directory -Force -Path "mpv" | Out-Null
           }
 
       - name: Build executable
+        shell: pwsh
         run: |
-          python scripts/build.py
+          $mpvArgs = "--bundle-mpv"
+          if (Test-Path "mpv/mpv.exe") { $mpvArgs = "--mpv-dir mpv" }
+          python build_desktop.py `
+            $mpvArgs `
+            --bundle-browser `
+            --zip
 
-      - name: Upload artifact
+      - name: Upload executable artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ani-cli-ar-windows
-          path: dist/ani-cli-ar.exe
+          name: ani-cli-ar-gui-exe
+          path: dist/ani-cli-ar-gui.exe
+
+      - name: Upload portable zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ani-cli-ar-windows-zip
+          path: dist/ani-cli-ar-v*.zip
 
       - name: Create release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/ani-cli-ar.exe
+          files: |
+            dist/ani-cli-ar-gui.exe
+            dist/ani-cli-ar-v*.zip
           generate_release_notes: true

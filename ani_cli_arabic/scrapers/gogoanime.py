@@ -6,6 +6,7 @@ from typing import Dict, List
 import httpx
 
 from .base import BaseScraper
+from .embeds import probe_embeds, resolve_embed
 
 BASE_URL = "https://gogoanime.co.za"
 USER_AGENT = (
@@ -16,7 +17,7 @@ USER_AGENT = (
 
 _CLIENT = httpx.Client(
     headers={"User-Agent": USER_AGENT, "Referer": BASE_URL + "/"},
-    timeout=httpx.Timeout(8.0, connect=5.0),
+    timeout=httpx.Timeout(6.0, connect=4.0),
     follow_redirects=True,
 )
 
@@ -63,51 +64,9 @@ def _extract_embeds(html: str) -> list:
 
 
 def _resolve_vidwish(embed_url: str) -> str:
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        return ""
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
-        )
-        ctx = browser.new_context(
-            user_agent=USER_AGENT,
-            viewport={"width": 1280, "height": 720},
-        )
-        ctx.add_init_script(
-            "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})"
-        )
-        page = ctx.new_page()
-        found = []
-
-        def on_response(resp):
-            url = resp.url
-            if ".m3u8" in url and url not in found:
-                found.append(url)
-
-        page.on("response", on_response)
-
-        def block_route(route):
-            rt = route.request.resource_type
-            if rt in ["image", "font", "stylesheet", "ping"]:
-                route.abort()
-            else:
-                route.continue_()
-
-        page.route("**/*", block_route)
-
-        try:
-            page.goto(embed_url, wait_until="commit", timeout=10000)
-            page.wait_for_timeout(8000)
-        except Exception:
-            pass
-
-        browser.close()
-
-    return found[0] if found else ""
+    """Resolve an embed (kwik/vidstreaming/gogo-server) to a playable URL."""
+    result = resolve_embed(embed_url, referer=BASE_URL + "/")
+    return result.get("stream_url") or ""
 
 
 class GogoAnimeScraper(BaseScraper):
@@ -134,28 +93,60 @@ class GogoAnimeScraper(BaseScraper):
         ep_nums = sorted(set(
             float(e) for e in re.findall(rf"{slug}-episode-(\d+(?:\.\d+)?)", resp.text)
         ))
-        if not ep_nums:
-            return []
-        return [{"title": name, "id": slug}]
+        if ep_nums:
+            return [{"title": name, "id": slug}]
+
+        # Some modern mirrors only render the total episode count in the
+        # episode_page widget / AJAX list, not inline, so also accept the slug
+        # being present as a valid "found" title.
+        if slug in resp.text:
+            return [{"title": name, "id": slug}]
+        return []
 
     def get_episodes(self, anime_id: str) -> List[Dict]:
         try:
             resp = _CLIENT.get(f"{BASE_URL}/category/{anime_id}")
         except Exception:
             return []
-        nums = sorted(set(
+        # Discover the live episode host (e.g. gogoanime.com.ro) from hrefs.
+        hosts = set()
+        for m in re.finditer(r'href="(https?://[^"]*-episode-\d+(?:\.\d+)?/)"', resp.text):
+            href = m.group(1)
+            from urllib.parse import urlparse
+            hosts.add(f"{urlparse(href).scheme}://{urlparse(href).netloc}")
+        host = next(iter(hosts)) if hosts else BASE_URL
+
+        raw_nums = sorted(set(
             float(e) for e in re.findall(rf"{anime_id}-episode-(\d+(?:\.\d+)?)", resp.text)
         ))
+        if not raw_nums:
+            return []
+        # Category pages only list the most recent ~10 episodes, but episode
+        # URLs follow a strict ``{host}/{slug}-episode-{n}/`` pattern up to the
+        # highest number seen, so emit the full range to keep older episodes
+        # (e.g. episode 1) reachable by the GUI/CLI.
+        hi = int(max(raw_nums))
+        nums = {float(n) for n in range(1, hi + 1)}
+        nums |= {n for n in raw_nums if n != float(int(n))}
         return [
-            {"episode_num": n, "id": f"{anime_id}/{n}"}
-            for n in nums
+            {"episode_num": n, "id": f"{host}/{anime_id}/{n}"}
+            for n in sorted(nums)
         ]
 
     def get_stream_url(self, episode_id: str) -> Dict:
-        parts = episode_id.split("/", 1)
-        show_id = parts[0]
-        ep_str = str(int(float(parts[1])))
-        url = f"{BASE_URL}/{show_id}-episode-{ep_str}-english-subbed/"
+        # episode_id is a full URL: {scheme}://{host}/{show_id}/{episode_num}
+        from urllib.parse import urlparse
+        try:
+            parsed = urlparse(episode_id)
+            netloc = parsed.netloc or BASE_URL.replace("https://", "")
+            path_parts = [p for p in parsed.path.split("/") if p]
+            if len(path_parts) < 2:
+                return {"stream_url": None, "headers": {}}
+            show_id = path_parts[0]
+            ep_str = str(int(float(path_parts[1])))
+        except (ValueError, TypeError):
+            return {"stream_url": None, "headers": {}}
+        url = f"{parsed.scheme}://{netloc}/{show_id}-episode-{ep_str}/"
 
         try:
             resp = _CLIENT.get(url)
@@ -165,12 +156,13 @@ class GogoAnimeScraper(BaseScraper):
             return {"stream_url": None, "headers": {}}
 
         embed_urls = _extract_embeds(resp.text)
-        for embed_url in embed_urls:
-            video = _resolve_vidwish(embed_url)
-            if video:
-                return {
-                    "stream_url": video,
-                    "headers": {"Referer": embed_url, "User-Agent": USER_AGENT},
-                }
+        # Probe all embeds in parallel; the first playable one wins so slow
+        # kwik/CF-gated hosters can't serialize the resolution.
+        video = probe_embeds(embed_urls, resolver=_resolve_vidwish)
+        if video:
+            return {
+                "stream_url": video,
+                "headers": {"Referer": url, "User-Agent": USER_AGENT},
+            }
 
         return {"stream_url": None, "headers": {}}

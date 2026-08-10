@@ -1132,7 +1132,7 @@ class UIManager:
         from .scrapers.provider_manager import get_provider_list
         options = [
             ("Preferred Language", ["Arabic Sub", "English Sub", "English Dub"], "preferred_language"),
-            ("Preferred Server/Provider", ["auto"] + get_provider_list("english"), "preferred_provider"),
+            ("Preferred Server/Provider", ["auto", "ask"] + get_provider_list("english"), "preferred_provider"),
             ("Default Quality", ["1080p", "720p", "480p"], "default_quality"),
             ("Default Download Quality", ["1080p", "720p", "480p"], "default_download_quality"),
             ("Download Engine", ["internal", "aria2c", "idm", "auto"], "download_mode"),
@@ -1166,6 +1166,8 @@ class UIManager:
                     val_str = "Enabled" if current_val else "Disabled"
                 if key == "preferred_provider":
                     val_str = (current_val or "auto").capitalize()
+                if key == "preferred_provider" and (current_val or "").lower() == "ask":
+                    val_str = "Ask Every Time"
                 if key == "player" and current_val == "ask":
                     val_str = "Ask Every Time"
                 

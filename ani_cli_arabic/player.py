@@ -7,6 +7,14 @@ import tempfile
 from typing import Optional
 from .utils import is_bundled
 
+
+def _no_window_flags():
+    """Return subprocess creation flags that suppress an extra console window
+    when spawning helper processes on Windows (no-op elsewhere)."""
+    if os.name == "nt":
+        return getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    return 0
+
 _GUEST_VOLUME_BINDINGS = (
     "VOLUME_UP add volume 5",
     "VOLUME_DOWN add volume -5",
@@ -18,11 +26,34 @@ _GUEST_VOLUME_BINDINGS = (
 )
 
 class PlayerManager:
+    _vlc_version_cache: Optional[tuple] = None
+
     def __init__(self, rpc_manager=None, console=None):
         self.temp_mpv_path = None
         self.rpc_manager = rpc_manager
         self.console = console
         self.guest_input_conf_path = None
+        self._last_proc: Optional[subprocess.Popen] = None
+
+    def kill_active_player(self):
+        """Terminate the most recently launched player process, if still
+        running (used by atexit / Watch Together cleanup)."""
+        proc = self._last_proc
+        if proc is None:
+            return
+        if proc.poll() is None:
+            try:
+                proc.kill()
+            except Exception:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+        try:
+            proc.wait(timeout=5.0)
+        except Exception:
+            pass
+        self._last_proc = None
 
     def build_mpv_args(
         self,
@@ -32,10 +63,12 @@ class PlayerManager:
         headers: Optional[dict] = None,
         ipc_socket: Optional[str] = None,
         lock_controls: bool = False,
+        subtitles: Optional[list] = None,
     ) -> list:
         """Build mpv arguments. With lock_controls, all default keybindings are
         disabled so guests cannot pause/seek manually; volume-only keys are bound
-        via a generated input.conf."""
+        via a generated input.conf. ``subtitles`` are remote track URLs passed
+        via ``--sub-file``."""
         mpv_args = [
             mpv_path,
             '--fullscreen',
@@ -43,7 +76,7 @@ class PlayerManager:
             '--cache=yes',
             '--demuxer-max-bytes=150M',
             '--demuxer-max-back-bytes=64M',
-            '--demuxer-readahead-secs=20',
+            '--demuxer-readahead-secs=30',
             '--hwdec=auto-safe',
             '--sub-auto=fuzzy',
             '--force-window=yes',
@@ -65,8 +98,36 @@ class PlayerManager:
             ua = headers.get('User-Agent')
             if ua:
                 mpv_args += ['--user-agent=' + ua]
+        for sub in (subtitles or []):
+            if sub and str(sub).startswith(('http://', 'https://')):
+                mpv_args.append('--sub-file=' + str(sub))
         mpv_args.append(url)
         return mpv_args
+
+    @classmethod
+    def _vlc_version(cls) -> Optional[tuple]:
+        """Return the installed VLC major.minor as a tuple, or None.
+
+        Cached after the first probe. Used to gate options that only exist on
+        certain VLC releases (e.g. ``--rc-quiet`` was dropped after VLC 2.x
+        and re-added in VLC 4.x)."""
+        if cls._vlc_version_cache is not None:
+            return cls._vlc_version_cache
+        cls._vlc_version_cache = None
+        try:
+            out = subprocess.run(
+                ["vlc", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=8.0,
+            ).stdout or ""
+            import re as _re
+            m = _re.search(r"vlc version (\d+)\.(\d+)", out)
+            if m:
+                cls._vlc_version_cache = (int(m.group(1)), int(m.group(2)))
+        except Exception:
+            cls._vlc_version_cache = None
+        return cls._vlc_version_cache
 
     def build_vlc_args(
         self,
@@ -76,11 +137,19 @@ class PlayerManager:
         headers: Optional[dict] = None,
         rc_port: Optional[int] = None,
         lock_controls: bool = False,
+        subtitles: Optional[list] = None,
     ) -> list:
         """Build VLC arguments. rc_port enables the rc interface over TCP
         (used for Watch Together sync). With lock_controls, playback hotkeys
         are unbound so guests cannot pause/seek manually."""
-        vlc_args = [vlc_path, '--fullscreen', '--no-video-title-show']
+        vlc_args = [
+            vlc_path,
+            '--fullscreen',
+            '--no-video-title-show',
+            '--network-caching=5000',
+            '--live-caching=3000',
+            '--audio-time-stretch',
+        ]
         if title:
             vlc_args.append('--meta-title=' + title)
         if rc_port:
@@ -88,6 +157,11 @@ class PlayerManager:
                 '--extraintf=rc',
                 '--rc-host=127.0.0.1:' + str(rc_port),
             ]
+            # --rc-quiet exists only on VLC 4.x+; avoid an "unknown option"
+            # warning on earlier releases (dropped after VLC 2.x).
+            ver = self._vlc_version()
+            if ver and ver[0] >= 4:
+                vlc_args.append('--rc-quiet')
         else:
             vlc_args.append('--play-and-exit')
         if lock_controls:
@@ -102,6 +176,9 @@ class PlayerManager:
                 '--key-stop=',
                 '--key-quit=',
             ]
+        for sub in (subtitles or []):
+            if sub and str(sub).startswith(('http://', 'https://')):
+                vlc_args.append('--sub-file=' + str(sub))
         if headers:
             ref = headers.get('Referer')
             if ref:
@@ -133,18 +210,26 @@ class PlayerManager:
     def get_mpv_path(self) -> Optional[str]:
         if is_bundled():
             exe_name = 'mpv.exe' if os.name == 'nt' else 'mpv'
-            bundled_mpv = os.path.join(sys._MEIPASS, 'mpv', exe_name)
+            bundled_dir = os.path.join(sys._MEIPASS, 'mpv')
+            bundled_mpv = os.path.join(bundled_dir, exe_name)
             if os.path.exists(bundled_mpv):
                 if not self.temp_mpv_path or not os.path.exists(self.temp_mpv_path):
                     temp_dir = tempfile.mkdtemp(prefix='anime_browser_mpv_')
+                    # Copy the whole bundled mpv directory so adjacent DLLs
+                    # (Windows winbuilds) travel with the executable.
+                    for name in os.listdir(bundled_dir):
+                        src = os.path.join(bundled_dir, name)
+                        dst = os.path.join(temp_dir, name)
+                        if os.path.isdir(src):
+                            shutil.copytree(src, dst, dirs_exist_ok=True)
+                        else:
+                            shutil.copy2(src, dst)
                     self.temp_mpv_path = os.path.join(temp_dir, exe_name)
-                    shutil.copy2(bundled_mpv, self.temp_mpv_path)
-                    
+
                     # Ensure executable permissions on Linux/macOS
                     if os.name != 'nt':
                         st = os.stat(self.temp_mpv_path)
                         os.chmod(self.temp_mpv_path, st.st_mode | 0o111)
-                        
                 return self.temp_mpv_path
         else:
             base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -159,8 +244,15 @@ class PlayerManager:
                 return local_mpv
 
             # Check system PATH
-            if shutil.which('mpv'):
-                return 'mpv'
+            if os.name == 'nt':
+                for name in ('mpv.exe', 'mpv'):
+                    found = shutil.which(name)
+                    if found:
+                        return found
+            else:
+                found = shutil.which('mpv')
+                if found:
+                    return found
             
             return 'mpv'
         
@@ -204,8 +296,12 @@ class PlayerManager:
         # Check MPV
         mpv_path = self.get_mpv_path()
         if mpv_path == 'mpv':
-            if shutil.which('mpv'):
-                 players['MPV'] = 'mpv'
+            if os.name == 'nt':
+                found = shutil.which('mpv.exe') or shutil.which('mpv')
+            else:
+                found = shutil.which('mpv')
+            if found:
+                players['MPV'] = found
         elif os.path.exists(mpv_path):
             players['MPV'] = mpv_path
 
@@ -227,7 +323,7 @@ class PlayerManager:
 
         return players
 
-    def play(self, url: str, title: str, player_type: str = 'ask', headers: Optional[dict] = None, ipc_socket: Optional[str] = None, rc_port: Optional[int] = None):
+    def play(self, url: str, title: str, player_type: str = 'ask', headers: Optional[dict] = None, ipc_socket: Optional[str] = None, rc_port: Optional[int] = None, subtitles: Optional[list] = None):
         if not url:
             msg = "Error: Extracted stream URL is invalid or empty."
             if self.console:
@@ -312,9 +408,9 @@ class PlayerManager:
 
         try:
             if selected_player == 'VLC':
-                self._play_vlc(url, title, available_players['VLC'], headers, rc_port=rc_port)
+                self._play_vlc(url, title, available_players['VLC'], headers, rc_port=rc_port, subtitles=subtitles)
             elif selected_player == 'MPV':
-                self._play_mpv(url, title, available_players['MPV'], headers, ipc_socket=ipc_socket)
+                self._play_mpv(url, title, available_players['MPV'], headers, ipc_socket=ipc_socket, subtitles=subtitles)
             elif selected_player == 'MPC-HC':
                 self._play_mpc(url, title, available_players['MPC-HC'], headers)
             return selected_player.lower() if selected_player else None
@@ -328,7 +424,7 @@ class PlayerManager:
                 input("Press Enter to continue...")
             return None
 
-    def _play_vlc(self, url: str, title: str, vlc_path: str = None, headers: dict = None, rc_port: Optional[int] = None):
+    def _play_vlc(self, url: str, title: str, vlc_path: str = None, headers: dict = None, rc_port: Optional[int] = None, subtitles: Optional[list] = None):
         if not vlc_path:
             vlc_path = self.get_available_players().get('VLC')
 
@@ -346,6 +442,7 @@ class PlayerManager:
             title=title,
             headers=headers,
             rc_port=rc_port,
+            subtitles=subtitles,
         )
 
         if self.console:
@@ -354,16 +451,21 @@ class PlayerManager:
         else:
             sys.stderr.write(f"[DEBUG] Launching VLC with stream URL: {url}\n")
 
-        result = subprocess.run(
+        proc = subprocess.Popen(
             vlc_args,
-            check=False,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
+            creationflags=_no_window_flags(),
         )
+        self._last_proc = proc
+        try:
+            result = proc.wait()
+        finally:
+            self._last_proc = None
 
-        if result.returncode != 0:
-            err_msg = result.stderr.decode("utf-8", errors="replace") if result.stderr else ""
-            detail = f"VLC exited with error code {result.returncode}"
+        if result != 0:
+            err_msg = proc.stderr.read().decode("utf-8", errors="replace") if proc.stderr else ""
+            detail = f"VLC exited with error code {result}"
             if err_msg:
                 detail += f"\nVLC stderr:\n{err_msg[:2000]}"
             if self.console:
@@ -374,7 +476,7 @@ class PlayerManager:
                 print(detail, file=sys.stderr)
                 input("Press Enter to continue...")
 
-    def _play_mpv(self, url: str, title: str, mpv_path: str = None, headers: dict = None, ipc_socket: Optional[str] = None):
+    def _play_mpv(self, url: str, title: str, mpv_path: str = None, headers: dict = None, ipc_socket: Optional[str] = None, subtitles: Optional[list] = None):
         if not mpv_path:
             mpv_path = self.get_available_players().get('MPV')
 
@@ -387,7 +489,8 @@ class PlayerManager:
         url = url.strip().strip('"').strip("'")
 
         mpv_args = self.build_mpv_args(
-            mpv_path, url, title=title, headers=headers, ipc_socket=ipc_socket
+            mpv_path, url, title=title, headers=headers, ipc_socket=ipc_socket,
+            subtitles=subtitles,
         )
 
         if self.console:
@@ -396,17 +499,22 @@ class PlayerManager:
         else:
             sys.stderr.write(f"[DEBUG] Launching MPV with stream URL: {url}\n")
 
-        result = subprocess.run(
+        proc = subprocess.Popen(
             mpv_args,
-            check=False,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
+            creationflags=_no_window_flags(),
         )
+        self._last_proc = proc
+        try:
+            result = proc.wait()
+        finally:
+            self._last_proc = None
 
-        if result.returncode != 0:
-            err_msg = result.stderr.decode("utf-8", errors="replace") if result.stderr else ""
-            detail = f"MPV exited with error code {result.returncode}"
+        if result != 0:
+            err_msg = proc.stderr.read().decode("utf-8", errors="replace") if proc.stderr else ""
+            detail = f"MPV exited with error code {result}"
             if err_msg:
                 detail += f"\nMPV stderr:\n{err_msg[:2000]}"
             if self.console:
@@ -436,5 +544,6 @@ class PlayerManager:
             mpc_args,
             check=False,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
+            stderr=subprocess.DEVNULL,
+            creationflags=_no_window_flags(),
         )
