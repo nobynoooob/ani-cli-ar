@@ -33,19 +33,21 @@ from .base import BaseScraper
 from . import embeds
 
 # Build id baked into the mkissa/allanime web client.
-BUILD_ID = "81"
+BUILD_ID = "98"
 # Content lane for episodes (the ``k`` query param on the bootstrap endpoint).
 _LANE = "k7"
-# 32-byte mask derived from the client bundle for build 81 (see `ev("81")`).
+# 32-byte mask derived from the client bundle for build 98 (see `jv("98")`).
 _MASK = bytes.fromhex(
-    "1c51425b45d71a76c58adb6b52fe3e766d615bb48a252327b7c74323ea37658b"
+    "a425a35301cacc46a6436789939cb8767730f84100faea5d7e772cc94a31de65"
 )
-# Epoch length and switch-window used to compute the signed epoch.
-_EPOCH_MS = 259200000
+# Epoch length and switch-window used to compute the signed epoch. These values
+# are reflected by the bootstrap response (``epochMs``/``graceMs``) and were
+# changed upstream from 3-day to 7-day epochs (see `Vv`/`E2` in the client).
+_EPOCH_MS = 604800000
 _SWITCH_MS = 86400000
 
 API_BASE = "https://api.mkissa.net/api"
-BOOTSTRAP_URL = "https://api.mkissa.net/client-crypto/v1/bootstrap?buildId=81&k=k7"
+BOOTSTRAP_URL = "https://api.mkissa.net/client-crypto/v1/bootstrap?buildId=98&k=k7"
 REFERRER = "https://mkissa.to"
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
