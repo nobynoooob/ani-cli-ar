@@ -6,7 +6,7 @@ from typing import Dict, List
 import httpx
 
 from .base import BaseScraper
-from .embeds import resolve_embed
+from .embeds import _is_media_url, resolve_embed
 
 BASE_URL = "https://gogoanime.co.za"
 USER_AGENT = (
@@ -116,12 +116,21 @@ class GogoAnimeScraper(BaseScraper):
             hosts.add(f"{urlparse(href).scheme}://{urlparse(href).netloc}")
         host = next(iter(hosts)) if hosts else BASE_URL
 
-        nums = sorted(set(
+        raw_nums = sorted(set(
             float(e) for e in re.findall(rf"{anime_id}-episode-(\d+(?:\.\d+)?)", resp.text)
         ))
+        if not raw_nums:
+            return []
+        # Category pages only list the most recent ~10 episodes, but episode
+        # URLs follow a strict ``{host}/{slug}-episode-{n}/`` pattern up to the
+        # highest number seen, so emit the full range to keep older episodes
+        # (e.g. episode 1) reachable by the GUI/CLI.
+        hi = int(max(raw_nums))
+        nums = {float(n) for n in range(1, hi + 1)}
+        nums |= {n for n in raw_nums if n != float(int(n))}
         return [
             {"episode_num": n, "id": f"{host}/{anime_id}/{n}"}
-            for n in nums
+            for n in sorted(nums)
         ]
 
     def get_stream_url(self, episode_id: str) -> Dict:
@@ -149,7 +158,7 @@ class GogoAnimeScraper(BaseScraper):
         embed_urls = _extract_embeds(resp.text)
         for embed_url in embed_urls:
             video = _resolve_vidwish(embed_url)
-            if video:
+            if video and _is_media_url(video):
                 return {
                     "stream_url": video,
                     "headers": {"Referer": url, "User-Agent": USER_AGENT},

@@ -1094,12 +1094,32 @@ class JSApi:
                     if hasattr(scraper, "preferred_category"):
                         scraper.preferred_category = category
                     eps = self._episode_list(provider, anime_id, category)
+                    if not eps:
+                        self._log_gui_resolve_error(
+                            provider, ep_num, None, {"episodes": []},
+                            note="no episode list (search/CF blocked)",
+                        )
                     target = str(int(float(ep_num)))
                     for ep in eps or []:
                         if str(int(float(ep["episode_num"]))) == target:
-                            return scraper.get_stream_url(ep["id"])
-            except Exception:
-                pass
+                            try:
+                                result = scraper.get_stream_url(ep["id"])
+                            except Exception as exc:
+                                self._log_gui_resolve_error(
+                                    provider, ep_num, exc, None,
+                                    note="get_stream_url raised",
+                                )
+                                break
+                            if self._is_usable_stream(result):
+                                return result
+                            self._log_gui_resolve_error(
+                                provider, ep_num, None, result,
+                                note="unusable stream (None/garbage URL)",
+                            )
+                            break
+            except Exception as exc:
+                self._log_gui_resolve_error(provider, ep_num, exc, None,
+                                            note="episode-list/resolver error")
         # Global fallback through the manager chain (CLI-style title search).
         import asyncio
         try:
@@ -1113,11 +1133,39 @@ class JSApi:
                     quiet=True,
                 )
             )
-            if url:
+            if self._is_usable_stream({"stream_url": url, "headers": headers}):
                 return {"stream_url": url, "headers": headers}
-        except Exception:
-            pass
+            self._log_gui_resolve_error(
+                "auto", ep_num, None, {"stream_url": url, "headers": headers, "via": name},
+                note="auto chain produced unusable stream",
+            )
+        except Exception as exc:
+            self._log_gui_resolve_error("auto", ep_num, exc, None,
+                                        note="auto chain raised")
         return None
+
+    @staticmethod
+    def _is_usable_stream(result) -> bool:
+        """A stream dict is usable only when it carries a real media URL."""
+        url = (result or {}).get("stream_url")
+        if not url or not isinstance(url, str):
+            return False
+        try:
+            from .scrapers.embeds import _is_media_url
+            return _is_media_url(url)
+        except Exception:
+            return True
+
+    @staticmethod
+    def _log_gui_resolve_error(provider, ep_num, exc, result, note: str = "") -> None:
+        """Emit a structured [GUI RESOLVE ERROR] line for the resolve pipeline."""
+        exc_txt = f"{type(exc).__name__}: {exc}" if exc is not None else "none"
+        payload = json.dumps(result, default=str)[:400] if result is not None else "none"
+        sys.stderr.write(
+            f"[GUI RESOLVE ERROR] provider={provider or 'auto'} "
+            f"episode={ep_num} note={note} exception={exc_txt} "
+            f"returned={payload}\n"
+        )
 
     # ------------------------------------------------------------------
     # Watch Together

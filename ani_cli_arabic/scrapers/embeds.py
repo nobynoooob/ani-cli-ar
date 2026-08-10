@@ -41,6 +41,35 @@ _MEDIA_RE = re.compile(r'(https?://[^"\'<>\s]+\.(?:m3u8|mp4)[^"\'<>\s]*)', re.IG
 _FILE_RE = re.compile(r'file["\']?\s*[:=]\s*["\']([^"\']+)', re.IGNORECASE)
 _SRC_RE = re.compile(r'src["\']?\s*[:=]\s*["\']([^"\']+\.(?:m3u8|mp4)[^"\']*)', re.IGNORECASE)
 _QUALITY_URL_RE = re.compile(r'"?url"?\s*:\s*"(https?://[^"]+\.(?:m3u8|mp4)[^"]*)"', re.IGNORECASE)
+
+
+def _is_media_url(url: str) -> bool:
+    """True when ``url`` looks like a real media stream link.
+
+    Requires the ``.m3u8``/``.mp4`` marker to live in the URL *path* (after the
+    host), never in the hostname itself. Hosts that contain the substring
+    (e.g. ``www.mp4upload.com/embed-....html``) used to be misclassified as
+    playable streams and launched the player against a dead embed page.
+    """
+    if not url or not isinstance(url, str):
+        return False
+    url = url.strip().strip('"').strip("'")
+    if not (url.startswith("http://") or url.startswith("https://")):
+        return False
+    try:
+        from urllib.parse import urlsplit
+        parts = urlsplit(url)
+        path = parts.path or ""
+        # Also accept query strings carrying the marker (?file=....m3u8).
+        query = parts.query or ""
+        return bool(
+            re.search(r"\.m3u8(?:\?|$|&)", path, re.IGNORECASE)
+            or re.search(r"\.mp4(?:\?|$|&)", path, re.IGNORECASE)
+            or re.search(r"\.m3u8(?:\?|$|&)", query, re.IGNORECASE)
+            or re.search(r"\.mp4(?:\?|$|&)", query, re.IGNORECASE)
+        )
+    except Exception:
+        return any(m in url for m in (".m3u8", ".mp4"))
 # ok.ru embeds expose the playable HLS manifest in their metadata JSON.
 _HLS_MANIFEST_RE = re.compile(r'"hlsManifestUrl"\s*:\s*"(https?://[^"\\]+\.m3u8[^"\\]*)"', re.IGNORECASE)
 # ok.ru HTML JS-escapes quotes as \&quot; and params as \\u0026
@@ -65,7 +94,7 @@ def extract_media_url(html: str) -> str:
     for pat in (_HLS_MANIFEST_RE, _HLS_MANIFEST_ESC_RE, _OK_QUALITY_RE, _MEDIA_RE, _QUALITY_URL_RE, _SRC_RE, _FILE_RE):
         for m in pat.finditer(html):
             url = _unescape((m.group(1) or "").strip().rstrip('"').rstrip("'"))
-            if url and url not in candidates:
+            if url and url not in candidates and _is_media_url(url):
                 candidates.append(url)
 
     # Prefer a clean HLS manifest, then any valid direct media link.
@@ -87,12 +116,12 @@ def _resolve_via_browser(embed_url: str, ref_url: str) -> str:
 
     def maybe(elem):
         u = elem if isinstance(elem, str) else getattr(elem, "url", "")
-        if isinstance(u, str) and (".m3u8" in u or ".mp4" in u) and u not in found:
+        if isinstance(u, str) and _is_media_url(u) and u not in found:
             found.append(u)
 
     def clean(url: str) -> str:
         u = _unescape(url.strip().rstrip('"').rstrip("'"))
-        return u if is_valid_stream_url(u) else ""
+        return u if _is_media_url(u) else ""
 
     with sync_playwright() as p:
         browser = p.chromium.launch(

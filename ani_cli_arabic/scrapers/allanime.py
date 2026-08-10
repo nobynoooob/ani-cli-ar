@@ -375,7 +375,7 @@ class AniThemeScraper(BaseScraper):
             src = _decode_obfuscated(u.get("sourceUrl") or "").strip()
             if not src:
                 continue
-            if src.startswith("http") and (".m3u8" in src or ".mp4" in src):
+            if src.startswith("http") and embeds._is_media_url(src):
                 direct.append(src)
             elif src.startswith("http"):
                 embeds_srcs.append(src)
@@ -391,6 +391,12 @@ class AniThemeScraper(BaseScraper):
 
         for src in embeds_srcs:
             resolved = embeds.resolve_embed(src, referer=REFERRER)
-            if resolved.get("stream_url"):
+            url = (resolved or {}).get("stream_url")
+            if not url:
+                continue
+            # Never hand an embed page back (e.g. a dead ``mp4upload.com/embed``
+            # stub whose hostname contains ``.mp4``) — only accept a real media
+            # link, otherwise let the next source/GUI fallback try.
+            if embeds._is_media_url(url):
                 return resolved
         return {"stream_url": None, "headers": {}}

@@ -82,12 +82,24 @@ class MkissaScraper(BaseScraper):
         ]
 
     def get_stream_url(self, episode_id: str) -> Dict:
+        # mkissa.to and allanime share the same GraphQL backend (api.mkissa.net)
+        # and anime ``_id`` values, so reuse allanime's verified client-crypto
+        # handshake as the primary extraction path. The Turnstile-protected
+        # episode page is only used as a last-resort fallback (it is captcha
+        # gated on most networks, so it rarely produces a stream).
+        try:
+            from .allanime import AniThemeScraper
+            stream = AniThemeScraper().get_stream_url(episode_id)
+            if stream and stream.get("stream_url"):
+                return stream
+        except Exception:
+            pass
+
         parts = episode_id.split("/", 1)
         show_id = parts[0]
         ep_no = parts[1] if len(parts) > 1 else "1"
-
         stream = self._try_playwright_extract(show_id, ep_no)
-        if stream:
+        if stream and stream.get("stream_url"):
             return stream
 
         return {"stream_url": None, "headers": {}}

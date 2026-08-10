@@ -15,6 +15,9 @@ from .base import BaseScraper
 from .embeds import resolve_embed
 
 BASE_URL = "https://hianime.to"
+# Some networks block the canonical domain; prioritize mirrors that actually
+# answer the ajax protocol. Dead/parked mirrors fall back to the default.
+_MIRRORS = ["https://hianime.to", "https://hi-anime.co"]
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -46,13 +49,51 @@ def _extract_card_html(html: str, base: str) -> str:
 
 class HiAnimeScraper(BaseScraper):
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._base_url = BASE_URL
+
     @property
     def name(self) -> str:
         return "hianime"
 
+    def _pick_mirror(self, path: str) -> str:
+        """Return a mirror that actually answers (JSON) for ``path``.
+
+        The current base URL is tested first; if it comes back empty/blocked,
+        alternates are probed so a dead or CF-gated canonical domain is
+        transparently replaced by a working mirror.
+        """
+        ordered = [self._base_url] + [
+            m for m in _MIRRORS if m != self._base_url
+        ]
+        try:
+            import httpx as _hx
+            for mirror in ordered:
+                try:
+                    r = _hx.get(
+                        f"{mirror}{path}",
+                        headers={"User-Agent": USER_AGENT, "Referer": mirror + "/"},
+                        timeout=8.0,
+                        follow_redirects=True,
+                    )
+                    # A real HiAnime ajax endpoint returns JSON; parked/CF pages
+                    # return HTML (or a challenge), so require JSON-looking text.
+                    if (
+                        r.status_code == 200
+                        and r.text.lstrip().startswith(("{", "[", '"'))
+                    ):
+                        return mirror
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return self._base_url
+
     def _fetch_ajax(self, path: str) -> str:
         """Fetch a HiAnime ajax endpoint, via browser when Cloudflare blocks HTTP."""
-        url = f"{BASE_URL}{path}"
+        self._base_url = self._pick_mirror(path)
+        url = f"{self._base_url}{path}"
         # Plain HTTP attempt first.
         try:
             r = _CLIENT.get(url)
@@ -70,7 +111,7 @@ class HiAnimeScraper(BaseScraper):
             ctx = browser.new_context(user_agent=USER_AGENT)
             page = ctx.new_page()
             try:
-                page.goto(BASE_URL, wait_until="domcontentloaded", timeout=20000)
+                page.goto(self._base_url, wait_until="domcontentloaded", timeout=20000)
                 page.wait_for_timeout(2000)
                 data = page.evaluate(
                     "async (u) => { const r = await fetch(u); return { s: r.status, t: await r.text() }; }",
@@ -99,7 +140,7 @@ class HiAnimeScraper(BaseScraper):
         for link in re.findall(r'href="([^"]+)"\s*[^>]*>?\s*<h3[^>]*>([^<]+)</h3>', raw):
             href, title = link
             if not href.startswith("http"):
-                href = BASE_URL + href
+                href = self._base_url + href
             match = re.search(r"/watch/([^/?#]+)", href)
             aid = (match.group(1) if match else "") or href.rstrip("/").rsplit("/", 1)[-1]
             if aid and aid not in seen:
@@ -153,13 +194,13 @@ class HiAnimeScraper(BaseScraper):
         if data.get("link"):
             return {
                 "stream_url": _clean_url(data["link"]),
-                "headers": {"Referer": BASE_URL + "/", "User-Agent": USER_AGENT},
+                "headers": {"Referer": self._base_url + "/", "User-Agent": USER_AGENT},
             }
         # Some responses embed a track/src object.
         src = (data.get("sources") or [{}])[0].get("file") if data.get("sources") else ""
         if src:
             return {
                 "stream_url": _clean_url(src),
-                "headers": {"Referer": BASE_URL + "/", "User-Agent": USER_AGENT},
+                "headers": {"Referer": self._base_url + "/", "User-Agent": USER_AGENT},
             }
         return {"stream_url": None, "headers": {}}
