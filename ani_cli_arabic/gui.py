@@ -15,7 +15,7 @@ import threading
 import time
 import urllib.request
 from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor, wait
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -38,6 +38,13 @@ _ANILIST_GRAPHQL = "https://graphql.anilist.co"
 _PROVIDER_TIMEOUT = 3.5
 _CHOSEN_PROVIDER_TIMEOUT = 25.0
 _MAX_SEARCH_CACHE = 128
+
+# Arabic Subtitle track — routes the GUI to the Arabic API pipeline (same
+# scraper-less flow the CLI uses for "Arabic Sub").
+ARABIC_CATEGORY = "ar_sub"
+ARABIC_PROVIDER = "arabic_api"
+_ARABIC_QUALITY_KEYS = {"1080p": "FRFhdQ", "720p": "FRLink", "480p": "FRLowQ"}
+_SUBTITLE_EXT_RE = _re.compile(r"\.(srt|vtt|ass|ssa)(?:\?|$)", _re.IGNORECASE)
 
 _SEARCH_GRAPHQL = """\
 query ($search: String, $page: Int, $perPage: Int) {
@@ -260,6 +267,25 @@ def _pick_provider_hit(hits, title) -> Optional[Dict]:
     return best if best is not None else hits[0]
 
 
+def _pick_arabic_hit(hits, title) -> Optional[Any]:
+    """Pick the best ``AnimeAPI.search_anime()`` hit for a title.
+
+    Scores on the EN title (exact normalized match, then substring/word
+    overlap), mirroring ``_pick_provider_hit``, falling back to the first
+    result like the CLI's Arabic Sub flow."""
+    if not hits:
+        return None
+    best = None
+    best_score = 0.0
+    for h in hits:
+        cand = getattr(h, "title_en", "") or ""
+        score = _hit_score(cand, title)
+        if score > best_score:
+            best_score = score
+            best = h
+    return best if best is not None else hits[0]
+
+
 def _rank_hit_score(title_score: float, eps_len, meta: Dict[str, Any]) -> float:
     """Rebalance a title-match score using the hit's episode count vs AniList.
 
@@ -323,6 +349,7 @@ class JSApi:
         self._detail_cache: OrderedDict[str, Dict[str, Any]] = OrderedDict()
         self._provider_id_cache: OrderedDict[str, Optional[str]] = OrderedDict()
         self._hit_eps_cache: OrderedDict[str, Optional[int]] = OrderedDict()
+        self._arabic_anime_cache: OrderedDict[str, Optional[Dict]] = OrderedDict()
         self._refine_inflight: set = set()
         self._lock = threading.Lock()
         self._cache_lock = threading.RLock()
@@ -684,6 +711,9 @@ class JSApi:
         longer allowance since the UI waits for its full episode list anyway.
         """
         anime_id = str(anime_id or "")
+        if category == ARABIC_CATEGORY:
+            return self._arabic_details(anime_id)
+
         cache_key = f"{anime_id}:{provider or 'auto'}"
 
         with self._lock:
@@ -728,6 +758,26 @@ class JSApi:
         meta["selected_provider"] = chosen
         meta["episodes"] = episodes
 
+        self._cache_put(self._detail_cache, cache_key, dict(meta), 64)
+        return meta
+
+    def _arabic_details(self, anime_id: str) -> Dict[str, Any]:
+        """Details payload for the AR Sub track: metadata + Arabic-API episodes.
+
+        The Arabic track exposes a single ``arabic_api`` provider (the Arabic
+        API pipeline), so no English scraper probing happens here."""
+        anime_id = str(anime_id or "")
+        cache_key = f"{anime_id}:{ARABIC_PROVIDER}:{ARABIC_CATEGORY}"
+        with self._lock:
+            if cache_key in self._detail_cache:
+                return self._detail_cache[cache_key]
+        meta = self.get_anime_meta(anime_id)
+        meta = dict(meta)  # copy: never mutate the lru_cached metadata object
+        eps = self._arabic_episodes(anime_id)
+        meta["providers"] = [{"name": ARABIC_PROVIDER, "available": len(eps) > 0}]
+        meta["category"] = ARABIC_CATEGORY
+        meta["selected_provider"] = ARABIC_PROVIDER if eps else None
+        meta["episodes"] = eps
         self._cache_put(self._detail_cache, cache_key, dict(meta), 64)
         return meta
 
@@ -970,6 +1020,172 @@ class JSApi:
         self._cache_put(self._ep_cache, ep_key, eps, 128)
         return eps
 
+    # ------------------------------------------------------------------
+    # Arabic Subtitle (AR Sub) pipeline
+    #
+    # The Arabic track is a separate pipeline backed by the Arabic API
+    # (AnimeAPI), exactly like the CLI's "Arabic Sub" flow: search -> episodes
+    # -> streaming servers -> MediaFire direct link. It never mixes with the
+    # English scraper chain.
+    # ------------------------------------------------------------------
+    def _arabic_anime(self, anime_id: str) -> Optional[Dict]:
+        """Resolve the Arabic-API anime (AnimeId + type) for an AniList id via
+        a CLI-style title search. Cached; returns ``None`` when untitled/not
+        found."""
+        anime_id = str(anime_id or "")
+        if not anime_id:
+            return None
+        cache_key = f"arabic:{anime_id}"
+        with self._lock:
+            if cache_key in self._arabic_anime_cache:
+                return self._arabic_anime_cache.get(cache_key) or None
+        resolved = None
+        try:
+            from .api import AnimeAPI
+            title = self._anime_title(anime_id)
+            if title:
+                picked = _pick_arabic_hit((AnimeAPI().search_anime(title) or []), title)
+                if picked is not None and getattr(picked, "id", ""):
+                    resolved = {
+                        "aid": str(picked.id),
+                        "type": getattr(picked, "type", "") or "SERIES",
+                    }
+        except Exception:
+            resolved = None
+        with self._lock:
+            self._cache_put(self._arabic_anime_cache, cache_key, resolved, 128)
+        return resolved
+
+    def _arabic_episodes(self, anime_id: str) -> List[Dict]:
+        """AR Sub episode list from the Arabic API, LRU-cached.
+
+        Returns ``[{"episode_num": float, "id": "{aid}|{number}|{type}",
+        "provider": "arabic_api"}, ...]`` so playback can resolve the exact
+        server/episode without a second title search."""
+        anime_id = str(anime_id or "")
+        if not anime_id:
+            return []
+        ep_key = f"{ARABIC_PROVIDER}:{anime_id}:{ARABIC_CATEGORY}"
+        with self._lock:
+            if ep_key in self._ep_cache:
+                return self._ep_cache[ep_key]
+        anime = self._arabic_anime(anime_id)
+        if not anime:
+            return []
+        eps = []
+        try:
+            from .api import AnimeAPI
+            raw = AnimeAPI().get_episodes(anime["aid"]) or []
+            for ep in raw:
+                try:
+                    num = float(ep.display_num)
+                except (TypeError, ValueError):
+                    continue
+                eps.append({
+                    "episode_num": num,
+                    "id": f'{anime["aid"]}|{ep.number}|{anime["type"]}',
+                    "provider": ARABIC_PROVIDER,
+                })
+        except Exception:
+            eps = []
+        if not eps:
+            # empty = transient upstream blank; don't poison the cache
+            return []
+        eps.sort(key=lambda e: e["episode_num"])
+        self._cache_put(self._ep_cache, ep_key, eps, 128)
+        return eps
+
+    def _arabic_quality_key(self) -> str:
+        """Map the user's default_quality setting to an Arabic server key."""
+        try:
+            from .settings import SettingsManager
+            quality = (SettingsManager().get("default_quality", "1080p") or "1080p").strip().lower()
+        except Exception:
+            quality = "1080p"
+        return _ARABIC_QUALITY_KEYS.get(quality, "FRLink")
+
+    @staticmethod
+    def _extract_subtitle_tracks(server_data) -> List[str]:
+        """Collect subtitle-track URLs from an Arabic server payload.
+
+        The Arabic streams are normally hardsubbed (subtitles baked into the
+        MediaFire mp4), but if the API ever returns external track URLs
+        (``.srt``/``.vtt``/``.ass``/``.ssa``) they are passed to the player."""
+        tracks: List[str] = []
+        seen = set()
+
+        def _walk(node):
+            if node is None:
+                return
+            if isinstance(node, str):
+                if node.startswith("http") and _SUBTITLE_EXT_RE.search(node):
+                    if node not in seen:
+                        seen.add(node)
+                        tracks.append(node)
+            elif isinstance(node, dict):
+                for v in node.values():
+                    _walk(v)
+            elif isinstance(node, (list, tuple)):
+                for v in node:
+                    _walk(v)
+
+        try:
+            _walk(server_data)
+        except Exception:
+            tracks = []
+        return tracks
+
+    def _resolve_arabic_stream(self, anime_id: str, ep_num) -> Optional[Dict]:
+        """Resolve an AR Sub stream through the Arabic API (CLI pipeline).
+
+        Mirrors ``watch_together._resolve_arabic``/``cli.play_video``:
+        ``get_streaming_servers`` -> pick quality server -> ``build_mediafire_url``
+        -> ``extract_mediafire_direct``. Returns a stream dict carrying any
+        detected external subtitle tracks. Never raises."""
+        anime_id = str(anime_id or "")
+        anime = self._arabic_anime(anime_id)
+        if not anime:
+            return None
+        try:
+            from .api import AnimeAPI
+            api = AnimeAPI()
+            target = str(int(float(ep_num)))
+            # Prefer the Arabic API's exact episode number from the cached list.
+            number = target
+            for ep in self._arabic_episodes(anime_id):
+                if str(int(float(ep["episode_num"]))) == target:
+                    number = ep["id"].split("|")[1]
+                    break
+            ctx = {
+                "anime": self._anime_title(anime_id) or "Anime",
+                "episode": target,
+                "provider": ARABIC_PROVIDER,
+            }
+            server_data = api.get_streaming_servers(
+                anime["aid"], number, anime["type"], ctx
+            )
+            if not server_data:
+                return None
+            current_ep = server_data.get("CurrentEpisode") or {}
+            server_key = self._arabic_quality_key()
+            server_id = current_ep.get(server_key) or current_ep.get("FRLink")
+            if not server_id:
+                return None
+            mf_url = api.build_mediafire_url(server_id)
+            direct = api.extract_mediafire_direct(mf_url, ctx)
+            if not direct or not str(direct).startswith(("http://", "https://")):
+                return None
+            return {
+                "stream_url": str(direct),
+                "headers": {},
+                "subtitles": self._extract_subtitle_tracks(server_data),
+                "provider": ARABIC_PROVIDER,
+            }
+        except Exception as exc:
+            self._log_gui_resolve_error(ARABIC_PROVIDER, ep_num, exc, None,
+                                        note="arabic resolve raised")
+            return None
+
     def get_episodes(
         self,
         anime_id: str,
@@ -981,6 +1197,9 @@ class JSApi:
         anime_id = str(anime_id or "")
         if not anime_id:
             return []
+
+        if category == ARABIC_CATEGORY:
+            return list(self._arabic_episodes(anime_id))
 
         pm = self._pm()
         if provider and provider in pm._providers:
@@ -1054,6 +1273,7 @@ class JSApi:
             return {"ok": False, "error": "No playable stream URL was found."}
 
         headers = (stream or {}).get("headers") or {}
+        subtitles = (stream or {}).get("subtitles") or []
         player_choice = (player_choice or "mpv").lower()
         try:
             self._player_mgr().play(
@@ -1061,6 +1281,7 @@ class JSApi:
                 title=f"{title} - Ep {int(ep_num)}",
                 player_type=player_choice,
                 headers=headers,
+                subtitles=subtitles,
             )
         except Exception as exc:
             return {"ok": False, "error": f"Failed to launch {player_choice}: {exc}"}
@@ -1081,67 +1302,108 @@ class JSApi:
 
         For a specific provider the episode list is fetched through the
         CLI-style id mapping (title search for non-miruro scrapers), so the
-        AniList integer is never passed to another provider's resolver. Falls
-        back to the full auto chain on failure. Never raises.
+        AniList integer is never passed to another provider's resolver. The
+        chosen provider and the full auto chain are probed **concurrently**:
+        the first path to produce a usable stream wins, so a slow/broken
+        chosen provider (allanime/gogoanime/hianime/mkissa) no longer blocks
+        the fallback to miruro's working HLS stream. Entire call is bounded by
+        ``_CHOSEN_PROVIDER_TIMEOUT``. Never raises.
         """
         pm = self._pm()
         anime_id = str(anime_id or "")
-        # Use the provider the episode was found with; fall back to auto.
-        if provider:
+
+        # AR Sub is a separate pipeline backed by the Arabic API — it never
+        # mixes with (or falls back to) the English scraper chain.
+        if category == ARABIC_CATEGORY:
+            return self._resolve_arabic_stream(anime_id, ep_num)
+
+        def _chosen():
+            """Episode-list + get_stream_url for the explicit provider."""
+            if not provider:
+                return None
             try:
                 scraper = pm._providers.get(provider)
-                if scraper is not None:
-                    if hasattr(scraper, "preferred_category"):
-                        scraper.preferred_category = category
-                    eps = self._episode_list(provider, anime_id, category)
-                    if not eps:
-                        self._log_gui_resolve_error(
-                            provider, ep_num, None, {"episodes": []},
-                            note="no episode list (search/CF blocked)",
-                        )
-                    target = str(int(float(ep_num)))
-                    for ep in eps or []:
-                        if str(int(float(ep["episode_num"]))) == target:
-                            try:
-                                result = scraper.get_stream_url(ep["id"])
-                            except Exception as exc:
-                                self._log_gui_resolve_error(
-                                    provider, ep_num, exc, None,
-                                    note="get_stream_url raised",
-                                )
-                                break
-                            if self._is_usable_stream(result):
-                                return result
+                if scraper is None:
+                    return None
+                if hasattr(scraper, "preferred_category"):
+                    scraper.preferred_category = category
+                eps = self._episode_list(provider, anime_id, category)
+                if not eps:
+                    self._log_gui_resolve_error(
+                        provider, ep_num, None, {"episodes": []},
+                        note="no episode list (search/CF blocked)",
+                    )
+                    return None
+                target = str(int(float(ep_num)))
+                for ep in eps or []:
+                    if str(int(float(ep["episode_num"]))) == target:
+                        try:
+                            result = scraper.get_stream_url(ep["id"])
+                        except Exception as exc:
                             self._log_gui_resolve_error(
-                                provider, ep_num, None, result,
-                                note="unusable stream (None/garbage URL)",
+                                provider, ep_num, exc, None,
+                                note="get_stream_url raised",
                             )
-                            break
+                            return None
+                        if self._is_usable_stream(result):
+                            return result
+                        self._log_gui_resolve_error(
+                            provider, ep_num, None, result,
+                            note="unusable stream (None/garbage URL)",
+                        )
+                        return None
+                return None
             except Exception as exc:
                 self._log_gui_resolve_error(provider, ep_num, exc, None,
                                             note="episode-list/resolver error")
-        # Global fallback through the manager chain (CLI-style title search).
-        import asyncio
-        try:
-            url, headers, name = asyncio.run(
-                pm.resolve_stream(
-                    self._anime_title(anime_id) or "Anime",
-                    ep_num,
-                    mode=category,
-                    language="english",
-                    provider="auto",
-                    quiet=True,
+                return None
+
+        def _auto():
+            """Global fallback through the manager chain (CLI-style title search)."""
+            import asyncio
+            try:
+                url, headers, name = asyncio.run(
+                    pm.resolve_stream(
+                        self._anime_title(anime_id) or "Anime",
+                        ep_num,
+                        mode=category,
+                        language="english",
+                        provider="auto",
+                        quiet=True,
+                    )
                 )
-            )
-            if self._is_usable_stream({"stream_url": url, "headers": headers}):
-                return {"stream_url": url, "headers": headers}
-            self._log_gui_resolve_error(
-                "auto", ep_num, None, {"stream_url": url, "headers": headers, "via": name},
-                note="auto chain produced unusable stream",
-            )
-        except Exception as exc:
-            self._log_gui_resolve_error("auto", ep_num, exc, None,
-                                        note="auto chain raised")
+                if self._is_usable_stream({"stream_url": url, "headers": headers}):
+                    return {"stream_url": url, "headers": headers}
+                self._log_gui_resolve_error(
+                    "auto", ep_num, None, {"stream_url": url, "headers": headers, "via": name},
+                    note="auto chain produced unusable stream",
+                )
+            except Exception as exc:
+                self._log_gui_resolve_error("auto", ep_num, exc, None,
+                                            note="auto chain raised")
+            return None
+
+        ex = ThreadPoolExecutor(max_workers=2)
+        try:
+            futs = {
+                ex.submit(_chosen): "chosen",
+                ex.submit(_auto): "auto",
+            }
+            try:
+                # as_completed yields winners as they arrive so a fast usable
+                # result returns instantly; its timeout breaks the deadlock if
+                # BOTH paths hang (none completed before the window elapsed).
+                for fut in as_completed(futs, timeout=_CHOSEN_PROVIDER_TIMEOUT):
+                    try:
+                        result = fut.result()
+                    except Exception:
+                        continue
+                    if result and self._is_usable_stream(result):
+                        return result
+            except Exception:
+                pass
+        finally:
+            ex.shutdown(wait=False)
         return None
 
     @staticmethod

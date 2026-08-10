@@ -767,6 +767,10 @@
 
   // ---------- details ----------
   let detailsToken = 0;   // guards against stale async renders
+  const CAT_LABELS = { sub: "SUB", dub: "DUB", ar_sub: "AR SUB" };
+  function catLabel(c) {
+    return CAT_LABELS[c] || String(c || "sub").toUpperCase().replace(/_/g, " ");
+  }
   async function openDetails(anime) {
     current = anime;
     category = "sub";
@@ -898,6 +902,7 @@
     $("#catGroup").innerHTML = [
       ["sub", "Sub", "SUB"],
       ["dub", "Dub", "DUB"],
+      ["ar_sub", "Arabic Sub", "AR SUB"],
     ].map(([val, label, abbr]) =>
       `<button class="cat-pill ${category === val ? "active" : ""}" data-cat="${val}" title="${label}">${abbr}</button>`
     ).join("");
@@ -974,7 +979,7 @@
     if (!ep) return;
     selectedEp = ep;
     $("#epDetailTitle").textContent = `Episode ${fmtEp(ep.episode_num)}`;
-    $("#epDetailSub").textContent = `${cap(provider || ep.provider || "")} · ${category.toUpperCase()} · ${cap(current.title)}`;
+    $("#epDetailSub").textContent = `${cap(provider || ep.provider || "")} · ${catLabel(category)} · ${cap(current.title)}`;
     const rows = document.querySelectorAll(".ep-row");
     rows.forEach(r => r.classList.toggle("active", Number(r.dataset.ep) === ep.episode_num));
     if (scroll) {

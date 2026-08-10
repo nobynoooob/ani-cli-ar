@@ -63,10 +63,12 @@ class PlayerManager:
         headers: Optional[dict] = None,
         ipc_socket: Optional[str] = None,
         lock_controls: bool = False,
+        subtitles: Optional[list] = None,
     ) -> list:
         """Build mpv arguments. With lock_controls, all default keybindings are
         disabled so guests cannot pause/seek manually; volume-only keys are bound
-        via a generated input.conf."""
+        via a generated input.conf. ``subtitles`` are remote track URLs passed
+        via ``--sub-file``."""
         mpv_args = [
             mpv_path,
             '--fullscreen',
@@ -95,6 +97,9 @@ class PlayerManager:
             ua = headers.get('User-Agent')
             if ua:
                 mpv_args += ['--user-agent=' + ua]
+        for sub in (subtitles or []):
+            if sub and str(sub).startswith(('http://', 'https://')):
+                mpv_args.append('--sub-file=' + str(sub))
         mpv_args.append(url)
         return mpv_args
 
@@ -131,6 +136,7 @@ class PlayerManager:
         headers: Optional[dict] = None,
         rc_port: Optional[int] = None,
         lock_controls: bool = False,
+        subtitles: Optional[list] = None,
     ) -> list:
         """Build VLC arguments. rc_port enables the rc interface over TCP
         (used for Watch Together sync). With lock_controls, playback hotkeys
@@ -169,6 +175,9 @@ class PlayerManager:
                 '--key-stop=',
                 '--key-quit=',
             ]
+        for sub in (subtitles or []):
+            if sub and str(sub).startswith(('http://', 'https://')):
+                vlc_args.append('--sub-file=' + str(sub))
         if headers:
             ref = headers.get('Referer')
             if ref:
@@ -305,7 +314,7 @@ class PlayerManager:
 
         return players
 
-    def play(self, url: str, title: str, player_type: str = 'ask', headers: Optional[dict] = None, ipc_socket: Optional[str] = None, rc_port: Optional[int] = None):
+    def play(self, url: str, title: str, player_type: str = 'ask', headers: Optional[dict] = None, ipc_socket: Optional[str] = None, rc_port: Optional[int] = None, subtitles: Optional[list] = None):
         if not url:
             msg = "Error: Extracted stream URL is invalid or empty."
             if self.console:
@@ -390,9 +399,9 @@ class PlayerManager:
 
         try:
             if selected_player == 'VLC':
-                self._play_vlc(url, title, available_players['VLC'], headers, rc_port=rc_port)
+                self._play_vlc(url, title, available_players['VLC'], headers, rc_port=rc_port, subtitles=subtitles)
             elif selected_player == 'MPV':
-                self._play_mpv(url, title, available_players['MPV'], headers, ipc_socket=ipc_socket)
+                self._play_mpv(url, title, available_players['MPV'], headers, ipc_socket=ipc_socket, subtitles=subtitles)
             elif selected_player == 'MPC-HC':
                 self._play_mpc(url, title, available_players['MPC-HC'], headers)
             return selected_player.lower() if selected_player else None
@@ -406,7 +415,7 @@ class PlayerManager:
                 input("Press Enter to continue...")
             return None
 
-    def _play_vlc(self, url: str, title: str, vlc_path: str = None, headers: dict = None, rc_port: Optional[int] = None):
+    def _play_vlc(self, url: str, title: str, vlc_path: str = None, headers: dict = None, rc_port: Optional[int] = None, subtitles: Optional[list] = None):
         if not vlc_path:
             vlc_path = self.get_available_players().get('VLC')
 
@@ -424,6 +433,7 @@ class PlayerManager:
             title=title,
             headers=headers,
             rc_port=rc_port,
+            subtitles=subtitles,
         )
 
         if self.console:
@@ -457,7 +467,7 @@ class PlayerManager:
                 print(detail, file=sys.stderr)
                 input("Press Enter to continue...")
 
-    def _play_mpv(self, url: str, title: str, mpv_path: str = None, headers: dict = None, ipc_socket: Optional[str] = None):
+    def _play_mpv(self, url: str, title: str, mpv_path: str = None, headers: dict = None, ipc_socket: Optional[str] = None, subtitles: Optional[list] = None):
         if not mpv_path:
             mpv_path = self.get_available_players().get('MPV')
 
@@ -470,7 +480,8 @@ class PlayerManager:
         url = url.strip().strip('"').strip("'")
 
         mpv_args = self.build_mpv_args(
-            mpv_path, url, title=title, headers=headers, ipc_socket=ipc_socket
+            mpv_path, url, title=title, headers=headers, ipc_socket=ipc_socket,
+            subtitles=subtitles,
         )
 
         if self.console:
