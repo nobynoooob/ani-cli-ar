@@ -133,11 +133,13 @@ jobs:
 
       - name: Build executable
         shell: pwsh
+        # --bundle-mpv auto-detects the bundled mpv: _find_mpv_dir() prefers the
+        # local mpv/ directory (populated by the download step) before PATH, so
+        # no dynamic space-joined argument is needed (a string like
+        # "--mpv-dir mpv" would be passed by PowerShell as a single token).
         run: |
-          $mpvArgs = "--bundle-mpv"
-          if (Test-Path "mpv/mpv.exe") { $mpvArgs = "--mpv-dir mpv" }
           python build_desktop.py `
-            $mpvArgs `
+            --bundle-mpv `
             --bundle-browser `
             --zip
 
