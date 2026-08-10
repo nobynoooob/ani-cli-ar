@@ -29,7 +29,9 @@ _EPISODES_GQL = """\
 query ($showId: String!) { show( _id: $showId ) { \
 _id availableEpisodesDetail }}"""
 
-_PLAYWRIGHT_TIMEOUT = 25.0
+# Turnstile-gated episode page rarely yields a stream; keep the browser
+# fallback short so it can't eat the whole provider allowance.
+_PLAYWRIGHT_TIMEOUT = 8.0
 
 _SESSION = requests.Session()
 _SESSION.headers.update({"User-Agent": USER_AGENT, "Referer": REFERRER})
@@ -147,7 +149,7 @@ class MkissaScraper(BaseScraper):
 
             url = f"{REFERRER}/anime/{show_id}/ep-{ep_no}"
             try:
-                page.goto(url, wait_until="commit", timeout=10000)
+                page.goto(url, wait_until="commit", timeout=5000)
                 deadline = time.time() + _PLAYWRIGHT_TIMEOUT
                 while time.time() < deadline:
                     if found_m3u8:

@@ -6,13 +6,20 @@ Cloudflare/JS challenges; `resolve_embed()` routes to Playwright when the
 plain HTTP pass fails.
 """
 import re
-from typing import Dict, List, Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Callable, Dict, List, Optional
 
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/126.0.0.0 Safari/537.36"
 )
+
+# Aggressive timeout for embed-page HTTP extraction and direct stream
+# validation. Fail fast (2.5-3s) so the first parallel worker wins instead of
+# waiting on slow hosters.
+_HTTP_TIMEOUT = 3.0
+_CONNECT_TIMEOUT = 2.0
 
 # A valid stream link must be a clean http(s) URL. Raw JSON/dict metadata blobs
 # (flashvars, escaped ``{"url": ...}`` values) are identifiable by braces.
@@ -145,8 +152,8 @@ def _resolve_via_browser(embed_url: str, ref_url: str) -> str:
             else r.continue_(),
         )
         try:
-            page.goto(embed_url, wait_until="domcontentloaded", timeout=25000)
-            page.wait_for_timeout(8000)
+            page.goto(embed_url, wait_until="domcontentloaded", timeout=5000)
+            page.wait_for_timeout(1500)
         except Exception:
             pass
         content = ""
@@ -178,7 +185,7 @@ def resolve_embed(embed_url: str, referer: Optional[str] = None) -> Dict:
                 "Referer": referer or url,
                 "Accept": "*/*",
             },
-            timeout=httpx.Timeout(12.0, connect=8.0),
+            timeout=httpx.Timeout(_HTTP_TIMEOUT, connect=_CONNECT_TIMEOUT),
             follow_redirects=True,
         )
         if r.status_code == 200:
@@ -198,3 +205,62 @@ def resolve_embed(embed_url: str, referer: Optional[str] = None) -> Dict:
             "headers": {"Referer": referer or url, "User-Agent": USER_AGENT},
         }
     return {"stream_url": None, "headers": {}}
+
+
+def _safe_resolve(resolver: Callable[[str], str], url: str) -> str:
+    try:
+        return resolver(url) or ""
+    except Exception:
+        return ""
+
+
+def probe_embeds(
+    embed_urls: List[str],
+    referer: Optional[str] = None,
+    resolver: Optional[Callable[[str], str]] = None,
+    timeout: float = _HTTP_TIMEOUT,
+    max_workers: int = 6,
+) -> str:
+    """Probe several embed/source URLs in parallel, return the first playable URL.
+
+    Each ``embed_urls`` entry is resolved concurrently (up to ``max_workers``);
+    the first result that passes :func:`_is_media_url` wins and is returned
+    immediately. ``resolver`` is a ``(url) -> stream_url`` callable returning
+    "" on failure; when omitted each URL goes through :func:`resolve_embed`
+    (``referer`` is forwarded). The entire probe is bounded by ``timeout``
+    seconds via ``as_completed`` so slow hosters (browser/CF fallbacks) never
+    stall the caller — you get the fastest winner, guaranteed return within
+    ``timeout``.
+
+    Returns "" when nothing playable surfaces before the deadline.
+    """
+    if not embed_urls:
+        return ""
+
+    def default_resolver(url: str) -> str:
+        result = resolve_embed(url, referer=referer)
+        return (result or {}).get("stream_url") or ""
+
+    resolver = resolver or default_resolver
+
+    executor = ThreadPoolExecutor(max_workers=max(max_workers, 1))
+    try:
+        futures = {
+            executor.submit(_safe_resolve, resolver, u): u for u in embed_urls
+        }
+        try:
+            # as_completed yields the fastest winner as it arrives; its own
+            # timeout guarantees a return even when EVERY worker hangs (the
+            # deadline is measured across the whole iteration, not per future).
+            for fut in as_completed(futures, timeout=timeout):
+                try:
+                    url = fut.result() or ""
+                except Exception:
+                    continue
+                if url and _is_media_url(url):
+                    return url
+        except Exception:
+            pass
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+    return ""

@@ -31,7 +31,7 @@ _CLIENT = httpx.Client(
         "Accept": "application/json, text/plain, */*",
         "X-Requested-With": "XMLHttpRequest",
     },
-    timeout=httpx.Timeout(12.0, connect=8.0),
+    timeout=httpx.Timeout(5.0, connect=3.0),
     follow_redirects=True,
 )
 
@@ -74,7 +74,7 @@ class HiAnimeScraper(BaseScraper):
                     r = _hx.get(
                         f"{mirror}{path}",
                         headers={"User-Agent": USER_AGENT, "Referer": mirror + "/"},
-                        timeout=8.0,
+                        timeout=4.0,
                         follow_redirects=True,
                     )
                     # A real HiAnime ajax endpoint returns JSON; parked/CF pages
@@ -111,11 +111,12 @@ class HiAnimeScraper(BaseScraper):
             ctx = browser.new_context(user_agent=USER_AGENT)
             page = ctx.new_page()
             try:
-                page.goto(self._base_url, wait_until="domcontentloaded", timeout=20000)
-                page.wait_for_timeout(2000)
+                page.goto(self._base_url, wait_until="domcontentloaded", timeout=8000)
+                page.wait_for_timeout(1000)
                 data = page.evaluate(
                     "async (u) => { const r = await fetch(u); return { s: r.status, t: await r.text() }; }",
                     url,
+                    timeout=8000,
                 )
                 if data and data.get("s") == 200:
                     return data.get("t", "")

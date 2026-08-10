@@ -209,18 +209,26 @@ class PlayerManager:
     def get_mpv_path(self) -> Optional[str]:
         if is_bundled():
             exe_name = 'mpv.exe' if os.name == 'nt' else 'mpv'
-            bundled_mpv = os.path.join(sys._MEIPASS, 'mpv', exe_name)
+            bundled_dir = os.path.join(sys._MEIPASS, 'mpv')
+            bundled_mpv = os.path.join(bundled_dir, exe_name)
             if os.path.exists(bundled_mpv):
                 if not self.temp_mpv_path or not os.path.exists(self.temp_mpv_path):
                     temp_dir = tempfile.mkdtemp(prefix='anime_browser_mpv_')
+                    # Copy the whole bundled mpv directory so adjacent DLLs
+                    # (Windows winbuilds) travel with the executable.
+                    for name in os.listdir(bundled_dir):
+                        src = os.path.join(bundled_dir, name)
+                        dst = os.path.join(temp_dir, name)
+                        if os.path.isdir(src):
+                            shutil.copytree(src, dst, dirs_exist_ok=True)
+                        else:
+                            shutil.copy2(src, dst)
                     self.temp_mpv_path = os.path.join(temp_dir, exe_name)
-                    shutil.copy2(bundled_mpv, self.temp_mpv_path)
-                    
+
                     # Ensure executable permissions on Linux/macOS
                     if os.name != 'nt':
                         st = os.stat(self.temp_mpv_path)
                         os.chmod(self.temp_mpv_path, st.st_mode | 0o111)
-                        
                 return self.temp_mpv_path
         else:
             base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

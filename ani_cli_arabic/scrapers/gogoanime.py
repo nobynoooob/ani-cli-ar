@@ -6,7 +6,7 @@ from typing import Dict, List
 import httpx
 
 from .base import BaseScraper
-from .embeds import _is_media_url, resolve_embed
+from .embeds import probe_embeds, resolve_embed
 
 BASE_URL = "https://gogoanime.co.za"
 USER_AGENT = (
@@ -17,7 +17,7 @@ USER_AGENT = (
 
 _CLIENT = httpx.Client(
     headers={"User-Agent": USER_AGENT, "Referer": BASE_URL + "/"},
-    timeout=httpx.Timeout(8.0, connect=5.0),
+    timeout=httpx.Timeout(6.0, connect=4.0),
     follow_redirects=True,
 )
 
@@ -156,12 +156,13 @@ class GogoAnimeScraper(BaseScraper):
             return {"stream_url": None, "headers": {}}
 
         embed_urls = _extract_embeds(resp.text)
-        for embed_url in embed_urls:
-            video = _resolve_vidwish(embed_url)
-            if video and _is_media_url(video):
-                return {
-                    "stream_url": video,
-                    "headers": {"Referer": url, "User-Agent": USER_AGENT},
-                }
+        # Probe all embeds in parallel; the first playable one wins so slow
+        # kwik/CF-gated hosters can't serialize the resolution.
+        video = probe_embeds(embed_urls, resolver=_resolve_vidwish)
+        if video:
+            return {
+                "stream_url": video,
+                "headers": {"Referer": url, "User-Agent": USER_AGENT},
+            }
 
         return {"stream_url": None, "headers": {}}

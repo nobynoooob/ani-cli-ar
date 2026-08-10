@@ -172,7 +172,9 @@ _id name availableEpisodesDetail availableEpisodes }}"""
 
 _CLIENT = httpx.Client(
     headers={"User-Agent": USER_AGENT, "Referer": REFERRER, "Content-Type": "application/json"},
-    timeout=httpx.Timeout(30.0, connect=8.0),
+    # mkissa/allanime API is fast when healthy; a tight cap turns upstream
+    # stalls/blocking into an immediate None so the GUI can fall back.
+    timeout=httpx.Timeout(8.0, connect=5.0),
 )
 
 # AllAnime's `--` hex remap: each two-hex-digit value maps to one output char.
@@ -389,14 +391,12 @@ class AniThemeScraper(BaseScraper):
                 "headers": {"Referer": REFERRER, "User-Agent": USER_AGENT},
             }
 
-        for src in embeds_srcs:
-            resolved = embeds.resolve_embed(src, referer=REFERRER)
-            url = (resolved or {}).get("stream_url")
-            if not url:
-                continue
-            # Never hand an embed page back (e.g. a dead ``mp4upload.com/embed``
-            # stub whose hostname contains ``.mp4``) — only accept a real media
-            # link, otherwise let the next source/GUI fallback try.
-            if embeds._is_media_url(url):
-                return resolved
+        # Probe the embed hosters in parallel (bounded ~3s) so slow/CF-gated
+        # embeds can never serialize the resolution; the fastest winner wins.
+        url = embeds.probe_embeds(embeds_srcs, referer=REFERRER)
+        if url:
+            return {
+                "stream_url": url,
+                "headers": {"Referer": REFERRER, "User-Agent": USER_AGENT},
+            }
         return {"stream_url": None, "headers": {}}
