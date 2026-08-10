@@ -6,6 +6,12 @@ on:
       - "v*"
   workflow_dispatch:
 
+# softprops/action-gh-release@v2 must be able to create the release and upload
+# assets on the tag ref. GITHUB_TOKEN defaults to read-only in restricted
+# repos, so grant explicit write access to repository contents.
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
@@ -162,4 +168,4 @@ jobs:
           files: |
             dist/ani-cli-ar-gui.exe
             dist/ani-cli-ar-v*.zip
-          generate_release_notes: true
+          generate_release_notes: false
