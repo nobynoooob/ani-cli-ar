@@ -1,0 +1,1118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ani-cli-ar</title>
+<style>
+  :root {
+    --bg: #0e1116;
+    --bg-2: #151a21;
+    --panel: #1b212b;
+    --border: #2a323f;
+    --text: #e6e9ee;
+    --muted: #8b94a3;
+    --accent: #7c5cff;
+    --accent-2: #3d7dff;
+    --success: #2fd07b;
+    --warn: #ffb454;
+    --danger: #ff5f6e;
+    --radius: 12px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: radial-gradient(1200px 600px at 80% -10%, #1d2130 0%, var(--bg) 55%);
+    color: var(--text);
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ---------- top bar ---------- */
+  header {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 12px 18px;
+    background: rgba(20, 25, 33, 0.8);
+    border-bottom: 1px solid var(--border);
+    backdrop-filter: blur(6px);
+    flex: 0 0 auto;
+  }
+  .logo {
+    font-weight: 800;
+    font-size: 18px;
+    letter-spacing: 0.5px;
+    white-space: nowrap;
+  }
+  .logo span { color: var(--accent); }
+  .searchbar {
+    flex: 1;
+    display: flex;
+    gap: 8px;
+    max-width: 720px;
+  }
+  .searchbar input {
+    flex: 1;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 10px 14px;
+    border-radius: var(--radius);
+    font-size: 14px;
+    outline: none;
+    transition: border-color .15s;
+  }
+  .searchbar input:focus { border-color: var(--accent); }
+  button {
+    cursor: pointer;
+    border: 1px solid var(--border);
+    background: var(--panel);
+    color: var(--text);
+    padding: 10px 16px;
+    border-radius: var(--radius);
+    font-size: 14px;
+    font-weight: 600;
+    transition: background .15s, border-color .15s, transform .05s;
+  }
+  button:hover { background: #232b37; border-color: #3a4556; }
+  button:active { transform: translateY(1px); }
+  button.primary {
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    border: none;
+    color: #fff;
+  }
+  button.primary:hover { filter: brightness(1.12); }
+  .version {
+    font-size: 12px;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+
+  /* ---------- update banner ---------- */
+  .update-banner {
+    flex: 0 0 auto;
+    display: none;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 18px;
+    background: linear-gradient(90deg, rgba(124, 92, 255, .16), rgba(61, 125, 255, .16));
+    border-bottom: 1px solid var(--accent);
+    font-size: 13.5px;
+  }
+  .update-banner.show { display: flex; }
+  .update-banner .tag {
+    background: var(--accent);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 800;
+    padding: 3px 9px;
+    border-radius: 20px;
+    text-transform: uppercase;
+    letter-spacing: .5px;
+  }
+  .update-banner .spacer { flex: 1; }
+  .update-banner a {
+    color: var(--accent-2);
+    font-weight: 600;
+    text-decoration: none;
+  }
+  .update-banner a:hover { text-decoration: underline; }
+
+  /* ---------- watch together status bar ---------- */
+  .wt-bar {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 18px;
+    background: var(--bg-2);
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+  }
+  .wt-bar .dot {
+    width: 9px; height: 9px; border-radius: 50%;
+    background: var(--muted);
+  }
+  .wt-bar.active .dot { background: var(--success); box-shadow: 0 0 8px var(--success); }
+  .wt-bar .role { font-weight: 700; color: var(--accent-2); }
+  .wt-bar .spacer { flex: 1; }
+  .wt-bar button { padding: 6px 12px; font-size: 12.5px; }
+
+  /* ---------- main / views ---------- */
+  main { flex: 1; overflow: hidden; position: relative; }
+  .view {
+    position: absolute;
+    inset: 0;
+    overflow-y: auto;
+    padding: 22px 22px 60px;
+    display: none;
+  }
+  .view.active { display: block; }
+  .section-title {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--muted);
+    margin: 6px 2px 14px;
+    font-weight: 700;
+  }
+
+  /* ---------- home: hero ---------- */
+  .hero {
+    text-align: center;
+    padding: 34px 0 26px;
+  }
+  .hero h1 { font-size: 26px; font-weight: 800; letter-spacing: .5px; }
+  .hero h1 span { background: linear-gradient(90deg, var(--accent), var(--accent-2));
+    -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .hero p { color: var(--muted); margin-top: 8px; font-size: 14px; }
+  .hero .home-search {
+    max-width: 560px;
+    margin: 22px auto 0;
+    display: flex;
+    gap: 8px;
+  }
+  .home-search input {
+    flex: 1;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 13px 16px;
+    border-radius: 30px;
+    font-size: 15px;
+    outline: none;
+  }
+  .home-search input:focus { border-color: var(--accent); }
+  .home-search button { border-radius: 30px; padding: 13px 22px; }
+
+  /* horizontal scroll strip */
+  .strip {
+    display: flex;
+    gap: 14px;
+    overflow-x: auto;
+    padding-bottom: 10px;
+    scrollbar-width: thin;
+  }
+  .strip .card { flex: 0 0 auto; width: 150px; }
+
+  /* ---------- grid & cards ---------- */
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+    gap: 18px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    cursor: pointer;
+    transition: transform .15s, border-color .15s, box-shadow .15s;
+  }
+  .card:hover {
+    transform: translateY(-3px);
+    border-color: var(--accent);
+    box-shadow: 0 8px 24px rgba(0,0,0,.45);
+  }
+  .card .poster {
+    aspect-ratio: 2 / 3;
+    width: 100%;
+    object-fit: cover;
+    background: var(--bg-2);
+    display: block;
+  }
+  .card .poster.ph {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 34px;
+    color: var(--muted);
+  }
+  .card .meta { padding: 10px 12px 12px; }
+  .card .title {
+    font-size: 13.5px;
+    font-weight: 600;
+    line-height: 1.35;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    min-height: 2.7em;
+  }
+  .card .provider {
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--muted);
+    text-transform: capitalize;
+  }
+
+  /* ---------- details: top bar ---------- */
+  .details-topbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 20px;
+  }
+  .back-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: transparent;
+    border-color: transparent;
+    color: var(--text);
+    font-size: 15px;
+    padding: 6px 4px;
+  }
+  .back-btn:hover { color: var(--accent-2); background: transparent; border-color: transparent; }
+  .back-btn .arrow { font-size: 17px; line-height: 1; }
+  .details-crumbs { color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* ---------- details: hero ---------- */
+  .details-hero {
+    position: relative;
+    border-radius: 16px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    background: var(--panel);
+    min-height: 300px;
+  }
+  .details-hero .backdrop {
+    position: absolute;
+    inset: 0;
+    background-size: cover;
+    background-position: center 20%;
+    filter: blur(2px) brightness(.35) saturate(1.1);
+    transform: scale(1.06);
+  }
+  .details-hero .shade { position: absolute; inset: 0;
+    background: linear-gradient(110deg, rgba(11,14,19,.92) 30%, rgba(11,14,19,.55) 70%, rgba(11,14,19,.35)); }
+  .hero-content {
+    position: relative;
+    display: flex;
+    gap: 26px;
+    padding: 26px;
+    align-items: flex-start;
+  }
+  .hero-poster {
+    flex: 0 0 auto;
+    width: 210px;
+    aspect-ratio: 2 / 3;
+    border-radius: 12px;
+    overflow: hidden;
+    background: var(--bg-2);
+    box-shadow: 0 12px 34px rgba(0,0,0,.6);
+  }
+  .hero-poster img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .hero-poster .placeholder {
+    width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;
+    font-size: 60px; color: var(--muted);
+  }
+  .hero-info { flex: 1; min-width: 0; }
+  .hero-info h1 { font-size: 26px; font-weight: 800; line-height: 1.2; }
+  .alt-titles { color: var(--muted); font-size: 13px; margin-top: 6px; line-height: 1.5; }
+  .meta-row { display: flex; align-items: center; gap: 14px; margin-top: 14px; flex-wrap: wrap; }
+  .rating-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: linear-gradient(135deg, rgba(124,92,255,.25), rgba(61,125,255,.25));
+    border: 1px solid var(--accent);
+    color: var(--text);
+    padding: 6px 14px;
+    border-radius: 22px;
+    font-weight: 700;
+    font-size: 14px;
+  }
+  .rating-badge .star { color: var(--warn); }
+  .meta-pills { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+  .pill {
+    font-size: 12px;
+    font-weight: 600;
+    padding: 5px 12px;
+    border-radius: 20px;
+    background: rgba(42, 50, 63, .6);
+    border: 1px solid var(--border);
+    color: var(--text);
+    text-transform: capitalize;
+  }
+  .genres-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+  .genres-row .pill { background: rgba(124,92,255,.12); border-color: rgba(124,92,255,.4); }
+  .synopsis { margin-top: 16px; font-size: 14px; line-height: 1.6; color: #cdd3dd; max-width: 860px; }
+  .synopsis .text { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+  .synopsis.expanded .text { display: block; }
+  .synopsis-toggle {
+    margin-top: 8px;
+    background: transparent;
+    border: none;
+    color: var(--accent-2);
+    font-size: 13px;
+    font-weight: 700;
+    padding: 0;
+  }
+  .synopsis-toggle:hover { background: transparent; text-decoration: underline; }
+
+  /* ---------- details: server bar ---------- */
+  .server-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin: 22px 0 16px;
+  }
+  .server-group { display: flex; gap: 8px; align-items: center; }
+  .server-label { font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); font-weight: 700; }
+  .cat-pill { padding: 8px 18px; border-radius: 22px; font-size: 13px; }
+  .provider-pill {
+    padding: 8px 16px;
+    border-radius: 22px;
+    font-size: 13px;
+    text-transform: capitalize;
+  }
+  .cat-pill.active, .provider-pill.active {
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    border-color: transparent;
+    color: #fff;
+  }
+  .provider-pill.off { opacity: .4; cursor: default; }
+  .provider-pill.off:hover { background: var(--panel); border-color: var(--border); }
+
+  /* ---------- details: episode panel ---------- */
+  .episodes-shell {
+    display: grid;
+    grid-template-columns: 320px 1fr;
+    gap: 20px;
+    align-items: start;
+  }
+  .ep-sidebar {
+    position: sticky;
+    top: 0;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  .ep-search-wrap { padding: 12px; border-bottom: 1px solid var(--border); }
+  .ep-search-wrap input {
+    width: 100%;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 9px 12px;
+    border-radius: 8px;
+    font-size: 13px;
+    outline: none;
+  }
+  .ep-search-wrap input:focus { border-color: var(--accent); }
+  .ep-count { font-size: 11px; color: var(--muted); padding: 8px 14px 0; }
+  .ep-list {
+    max-height: 420px;
+    overflow-y: auto;
+    padding: 8px;
+  }
+  .ep-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    text-align: left;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    padding: 9px 10px;
+    font-size: 13px;
+    margin-bottom: 2px;
+  }
+  .ep-row:hover { background: #202735; border-color: var(--border); }
+  .ep-row .num {
+    flex: 0 0 46px;
+    font-weight: 700;
+    color: var(--accent-2);
+  }
+  .ep-row .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #cdd3dd; }
+  .ep-row.active {
+    background: linear-gradient(135deg, rgba(124,92,255,.22), rgba(61,125,255,.22));
+    border-color: var(--accent);
+  }
+  .ep-row.active .num { color: #fff; }
+  .ep-empty { color: var(--muted); font-size: 13px; padding: 14px; text-align: center; }
+
+  .ep-details {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 18px;
+  }
+  .ep-details .ep-title { font-size: 18px; font-weight: 700; margin-bottom: 4px; }
+  .ep-details .ep-sub { color: var(--muted); font-size: 13px; margin-bottom: 16px; }
+  .play-row { display: flex; gap: 12px; align-items: center; margin-top: 16px; flex-wrap: wrap; }
+  .play-row .hint { color: var(--muted); font-size: 13px; }
+  select {
+    background: var(--bg-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 9px 12px;
+    font-size: 14px;
+  }
+  .ep-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+  .ep-actions .pill { cursor: pointer; }
+
+  /* ---------- toast ---------- */
+  #toast {
+    position: fixed;
+    bottom: 26px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #202837;
+    border: 1px solid var(--border);
+    padding: 12px 20px;
+    border-radius: 10px;
+    font-size: 14px;
+    z-index: 99;
+    display: none;
+    max-width: 80vw;
+    box-shadow: 0 10px 30px rgba(0,0,0,.5);
+  }
+  #toast.show { display: block; animation: rise .18s ease; }
+  #toast.error { border-color: var(--danger); color: var(--danger); }
+  @keyframes rise { from { transform: translateY(30px); opacity: 0; } }
+
+  .empty {
+    text-align: center;
+    color: var(--muted);
+    padding: 60px 0;
+    font-size: 15px;
+  }
+  .spinner {
+    margin: 40px auto;
+    width: 34px; height: 34px;
+    border: 3px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin .8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: #2c3542; border-radius: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+</style>
+</head>
+<body>
+  <header>
+    <div class="logo">ani-cli-ar<span>◆</span></div>
+    <div class="searchbar">
+      <input id="q" type="text" placeholder="Search anime..." autofocus />
+      <button class="primary" id="btnSearch">Search</button>
+    </div>
+    <div class="version" id="version">loading…</div>
+  </header>
+
+  <div class="update-banner" id="updateBanner">
+    <span class="tag">Update</span>
+    <span id="updateText">A new version is available.</span>
+    <span class="spacer"></span>
+    <a href="https://github.com/np4abdou1/ani-cli-arabic/releases" target="_blank">See release →</a>
+  </div>
+
+  <div class="wt-bar" id="wtBar">
+    <span class="dot"></span>
+    <span id="wtText">Watch Together: offline</span>
+    <span class="spacer"></span>
+    <button id="btnHost">Host Room</button>
+    <button id="btnJoin">Join Room</button>
+    <button id="btnLeave" style="display:none">Leave</button>
+  </div>
+
+  <main id="app">
+    <!-- ================= HOME VIEW ================= -->
+    <section class="view active" id="home-view">
+      <div class="hero">
+        <h1>Search <span>anime</span> &amp; watch instantly</h1>
+        <p>Browse trending titles or search by name. Click any card for details and episodes.</p>
+        <div class="home-search">
+          <input id="homeQ" type="text" placeholder="Try &quot;Naruto&quot;, &quot;One Piece&quot;, &quot;Frieren&quot;..." />
+          <button class="primary" id="btnHomeSearch">Search</button>
+        </div>
+      </div>
+
+      <div class="section-title" id="trendingTitle">Trending Now</div>
+      <div class="strip" id="trendingStrip"></div>
+
+      <div class="section-title" id="resultsTitle" style="display:none">Results</div>
+      <div class="grid" id="grid"></div>
+    </section>
+
+    <!-- ================= DETAILS VIEW ================= -->
+    <section class="view" id="details-view">
+      <div class="details-topbar">
+        <button class="back-btn" id="btnBack"><span class="arrow">←</span> Back to Search</button>
+        <span class="details-crumbs" id="crumbs"></span>
+      </div>
+
+      <div class="details-hero">
+        <div class="backdrop" id="backdrop"></div>
+        <div class="shade"></div>
+        <div class="hero-content">
+          <div class="hero-poster" id="heroPoster"></div>
+          <div class="hero-info">
+            <h1 id="detTitle"></h1>
+            <div class="alt-titles" id="detAltTitles"></div>
+            <div class="meta-row">
+              <div class="rating-badge"><span class="star">★</span><span id="detScore"></span></div>
+            </div>
+            <div class="meta-pills" id="detPills"></div>
+            <div class="genres-row" id="detGenres"></div>
+            <div class="synopsis">
+              <div class="text" id="detSynopsis"></div>
+              <button class="synopsis-toggle" id="synToggle">Show more</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="server-bar">
+        <span class="server-label">Audio</span>
+        <div class="server-group" id="catGroup"></div>
+        <span class="server-label">Server</span>
+        <div class="server-group" id="providerGroup"></div>
+      </div>
+
+      <div class="episodes-shell">
+        <div class="ep-sidebar">
+          <div class="ep-search-wrap">
+            <input id="epSearch" type="text" placeholder="Find episode number..." />
+          </div>
+          <div class="ep-count" id="epCount"></div>
+          <div class="ep-list" id="epList"></div>
+        </div>
+        <div class="ep-details">
+          <div class="ep-title" id="epDetailTitle">Select an episode</div>
+          <div class="ep-sub" id="epDetailSub"></div>
+          <div class="play-row">
+            <span class="hint">Play with</span>
+            <select id="playerSel">
+              <option value="mpv">MPV</option>
+              <option value="vlc">VLC</option>
+            </select>
+            <button class="primary" id="btnPlayNow">▶ Play Now</button>
+          </div>
+          <div class="ep-actions">
+            <span class="pill" id="actionPrev">← Prev</span>
+            <span class="pill" id="actionNext">Next →</span>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast"></div>
+
+<script>
+  let apiCache = null;
+
+  async function getApi() {
+    if (apiCache) return apiCache;
+    if (window.pywebview && window.pywebview.api) {
+      apiCache = window.pywebview.api;
+      return apiCache;
+    }
+    return new Promise((resolve) => {
+      window.addEventListener('pywebviewready', () => {
+        apiCache = window.pywebview.api;
+        resolve(apiCache);
+      }, { once: true });
+    });
+  }
+
+  const $ = (s) => document.querySelector(s);
+  const grid = $("#grid");
+  const trendingStrip = $("#trendingStrip");
+
+  // ---------- view switching ----------
+  let current = null;           // selected anime summary
+  let details = null;           // full get_anime_details payload
+  let episodes = [];            // episode list of current selection
+  let category = "sub";         // active audio category
+  let provider = null;          // active server provider
+  let selectedEp = null;        // selected episode object
+
+  function showView(id) {
+    document.querySelectorAll(".view").forEach(v => v.classList.remove("active"));
+    const el = $("#" + id);
+    el.classList.add("active");
+    el.scrollTop = 0;
+    if (id === "details-view") $("#q").value = "";
+  }
+
+  // ---------- toast ----------
+  let toastTimer;
+  function toast(msg, isError = false) {
+    const t = $("#toast");
+    t.textContent = msg;
+    t.className = isError ? "error" : "";
+    t.classList.add("show");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => t.classList.remove("show"), 3200);
+  }
+
+  // ---------- header ----------
+  getApi().then(api => {
+    if (api && api.get_version) {
+      api.get_version().then(v => {
+        $("#version").textContent = v && v.version ? v.version : "";
+        if (v && v.providers) $("#crumbs").textContent = v.providers.join(" · ");
+      }).catch(() => {});
+    }
+  }).catch(() => {});
+
+  // ---------- in-app update banner ----------
+  function renderUpdateBanner(state) {
+    const banner = $("#updateBanner");
+    if (!state || state.error || !state.update_available) {
+      banner.classList.remove("show");
+      return;
+    }
+    const cur = state.current || "";
+    const latest = state.latest || "";
+    $("#updateText").textContent = `You're on v${cur} — v${latest} is available.`;
+    banner.classList.add("show");
+  }
+  window.addEventListener("update-checked", (e) => renderUpdateBanner(e.detail), { once: false });
+  getApi().then(api => {
+    if (api && api.check_for_updates) {
+      api.check_for_updates().then(renderUpdateBanner).catch(() => {});
+    }
+  }).catch(() => {});
+
+  // ---------- home: trending ----------
+  async function loadTrending() {
+    try {
+      const api = await getApi();
+      const items = await api.get_trending();
+      trendingStrip.innerHTML = "";
+      if (!items || !items.length) {
+        $("#trendingTitle").style.display = "none";
+        return;
+      }
+      for (const r of items) {
+        trendingStrip.appendChild(cardFor(r));
+      }
+    } catch (e) { /* non-fatal */ }
+  }
+
+  // ---------- card factory ----------
+  function cardFor(r) {
+    const card = document.createElement("div");
+    card.className = "card";
+    const poster = r.poster
+      ? `<img class="poster" src="${r.poster}" alt="" referrerpolicy="no-referrer" onerror="this.outerHTML='<div class=poster.ph>◆</div>'" />`
+      : '<div class="poster ph">◆</div>';
+    const badges = (r.providers && r.providers.length ? r.providers : [r.provider || ""])
+      .filter(Boolean).join(" · ");
+    card.innerHTML = `
+      ${poster}
+      <div class="meta">
+        <div class="title">${esc(r.title)}</div>
+        <div class="provider">${esc(badges)}</div>
+      </div>`;
+    card.addEventListener("click", () => openDetails(r));
+    return card;
+  }
+
+  // ---------- home: search ----------
+  let lastQuery = null;
+  async function doSearch(query, fromHome = true) {
+    const q = (query != null ? query : $("#q").value).trim();
+    if (!q) return;
+    if (fromHome) $("#q").value = q;
+    lastQuery = q.toLowerCase();
+    grid.innerHTML = '<div class="spinner"></div>';
+    $("#resultsTitle").style.display = "block";
+    try {
+      const api = await getApi();
+      if (!api) { toast("PyWebView bridge not available", true); return; }
+      const results = await api.search(q);
+      renderGrid(results);
+    } catch (e) {
+      grid.innerHTML = '<div class="empty">Search failed</div>';
+      toast(String(e), true);
+    }
+  }
+  // Provider coverage is enriched in the background; refresh the grid when the
+  // enrich job finishes so server badges appear without a manual re-search.
+  window.addEventListener("search-refined", (e) => {
+    const d = e.detail || {};
+    const q = (d.query || "").toString().toLowerCase();
+    if (!lastQuery || q !== lastQuery) return;
+    if (!Array.isArray(d.results)) return;
+    renderGrid(d.results);
+  });
+  $("#btnSearch").addEventListener("click", () => doSearch(null, false));
+  $("#q").addEventListener("keydown", (e) => { if (e.key === "Enter") doSearch(null, false); });
+  $("#btnHomeSearch").addEventListener("click", () => doSearch($("#homeQ").value, true));
+  $("#homeQ").addEventListener("keydown", (e) => { if (e.key === "Enter") doSearch($("#homeQ").value, true); });
+
+  function renderGrid(results) {
+    if (!results || !results.length) {
+      grid.innerHTML = '<div class="empty">No results. Try another title.</div>';
+      return;
+    }
+    grid.innerHTML = "";
+    for (const r of results) grid.appendChild(cardFor(r));
+  }
+
+  // ---------- details ----------
+  let detailsToken = 0;   // guards against stale async renders
+  async function openDetails(anime) {
+    current = anime;
+    category = "sub";
+    provider = anime.provider && anime.provider !== "trending" ? anime.provider : null;
+    selectedEp = null;
+    const token = ++detailsToken;
+    showView("details-view");
+    $("#crumbs").textContent = "Loading details…";
+    setHeroLoading();
+
+    const api = await getApi();
+    // 1) Instant: AniList metadata paints the hero immediately (cached after
+    //    the first view of a title, so reopens render in ~0ms).
+    try {
+      const meta = await api.get_anime_meta(anime.id);
+      if (token !== detailsToken) return;
+      if (meta && Object.keys(meta).length) {
+        details = meta;
+        renderHero();
+      }
+    } catch (e) { /* non-fatal: full details below also renders the hero */ }
+
+    // 2) Async: parallel provider probe + episodes, then re-render.
+    try {
+      const full = await api.get_anime_details(anime.id, provider, category);
+      if (token !== detailsToken) return;
+      details = full || details || {};
+      renderDetails();
+    } catch (e) {
+      if (token !== detailsToken) return;
+      $("#crumbs").textContent = "Failed to load details";
+      toast(String(e), true);
+    }
+  }
+
+  function setHeroLoading() {
+    $("#detTitle").textContent = current ? current.title : "";
+    $("#detAltTitles").textContent = "Loading…";
+    $("#detScore").textContent = "…";
+    $("#detPills").innerHTML = "";
+    $("#detGenres").innerHTML = "";
+    $("#detSynopsis").textContent = "";
+    $("#heroPoster").innerHTML = current && current.poster
+      ? `<img src="${current.poster}" referrerpolicy="no-referrer" onerror="this.parentElement.innerHTML='<div class=placeholder>◆</div>'" />`
+      : '<div class="placeholder">◆</div>';
+    if (current && current.poster) {
+      $("#backdrop").style.backgroundImage = `url(${current.poster})`;
+    } else {
+      $("#backdrop").style.backgroundImage = "none";
+    }
+    $("#epList").innerHTML = '<div class="ep-empty">Loading episodes…</div>';
+    $("#epDetailTitle").textContent = "Select an episode";
+    $("#epDetailSub").textContent = "";
+  }
+
+  function renderHero() {
+    if (!details) return;
+
+    const title = details.title || current.title;
+    $("#detTitle").textContent = title;
+    $("#crumbs").textContent = `${details.type || ""} · ${details.premiered || ""}`
+      .replace(/^\s*·\s*/, "").replace(/\s*·\s*$/, "").replace(/\s*·\s*/g, " · ") || title;
+
+    const altParts = [];
+    if (details.romaji && details.romaji !== title) altParts.push(details.romaji);
+    if (details.native) altParts.push(details.native);
+    $("#detAltTitles").textContent = altParts.join("  ·  ");
+
+    $("#detScore").textContent = details.score != null ? `${details.score.toFixed(2)} / 10` : "N/A";
+
+    const pills = [];
+    if (details.type) pills.push([details.type, ""]);
+    if (details.premiered) pills.push([details.premiered, ""]);
+    if (details.duration) pills.push([`~${details.duration} min/ep`, ""]);
+    const epsTotal = Array.isArray(details.episodes)
+      ? details.episodes.length
+      : (details.episodes_count || details.total_episodes || (typeof details.episodes === "number" ? details.episodes : "?"));
+    pills.push([`${epsTotal} eps`, ""]);
+    if (details.status) {
+      const cls = details.status === "Airing" ? "style='background:rgba(47,208,123,.15);border-color:rgba(47,208,123,.5);color:#7ce8b3'" : "";
+      pills.push([details.status, cls]);
+    }
+    if (Array.isArray(details.studio)) {
+      if (details.studio.length) pills.push([details.studio.join(", "), ""]);
+    } else if (details.studio) {
+      pills.push([details.studio, ""]);
+    }
+    $("#detPills").innerHTML = pills.map(([t, extra]) =>
+      `<span class="pill" ${extra}>${esc(t)}</span>`).join("");
+
+    $("#detGenres").innerHTML = (Array.isArray(details.genres) ? details.genres : [])
+      .map(g => `<span class="pill">${esc(g)}</span>`).join("");
+
+    const syn = details.description || "No synopsis available.";
+    $("#detSynopsis").textContent = syn;
+    $("#synToggle").textContent = "Show more";
+    $("#synToggle").style.display = syn.length > 230 ? "inline-block" : "none";
+    $("#detSynopsis").parentElement.classList.remove("expanded");
+
+    const posterUrl = details.poster || (current && current.poster);
+    if (posterUrl) {
+      $("#heroPoster").innerHTML = `<img src="${posterUrl}" referrerpolicy="no-referrer" onerror="this.parentElement.innerHTML='<div class=placeholder>◆</div>'" />`;
+      const bd = details.backdrop || posterUrl;
+      $("#backdrop").style.backgroundImage = `url(${bd})`;
+    }
+  }
+
+  function renderDetails() {
+    if (!details) return;
+    renderHero();
+
+    renderServerBar(Array.isArray(details.providers) ? details.providers : []);
+    episodes = Array.isArray(details.episodes) ? details.episodes : [];
+    provider = details.selected_provider || (episodes[0] && episodes[0].provider) || provider;
+    renderEpisodeList();
+
+    // auto-select first episode
+    if (episodes.length) {
+      selectEpisode(episodes[0], false);
+      $("#epSearch").value = "";
+    } else {
+      $("#epList").innerHTML = '<div class="ep-empty">No episodes available on this server.</div>';
+      $("#epDetailTitle").textContent = "No episodes";
+      $("#epDetailSub").textContent = "Try a different server or audio track.";
+    }
+  }
+
+  function renderServerBar(providers) {
+    $("#catGroup").innerHTML = [
+      ["sub", "Sub", "SUB"],
+      ["dub", "Dub", "DUB"],
+    ].map(([val, label, abbr]) =>
+      `<button class="cat-pill ${category === val ? "active" : ""}" data-cat="${val}" title="${label}">${abbr}</button>`
+    ).join("");
+    document.querySelectorAll(".cat-pill").forEach(b => {
+      b.addEventListener("click", () => {
+        if (b.dataset.cat === category) return;
+        category = b.dataset.cat;
+        reloadEpisodes();
+      });
+    });
+
+    const list = Array.isArray(providers) ? providers : [];
+    $("#providerGroup").innerHTML = list.map(p =>
+      `<button class="provider-pill ${provider === p.name ? "active" : ""} ${p.available ? "" : "off"}"
+         data-prov="${p.name}" ${p.available ? "" : "disabled"}>${esc(p.name)}</button>`
+    ).join("");
+    document.querySelectorAll(".provider-pill:not(.off)").forEach(b => {
+      if (b.dataset.prov === provider) b.classList.add("active");
+      b.addEventListener("click", () => {
+        if (b.dataset.prov === provider) return;
+        provider = b.dataset.prov;
+        reloadEpisodes();
+      });
+    });
+  }
+
+  async function reloadEpisodes() {
+    if (!current) return;
+    const token = detailsToken;
+    $("#epList").innerHTML = '<div class="ep-empty">Loading episodes…</div>';
+    try {
+      const api = await getApi();
+      const full = await api.get_anime_details(current.id, provider, category);
+      if (token !== detailsToken) return;
+      details = full || details || {};
+      episodes = Array.isArray(details.episodes) ? details.episodes : [];
+      renderDetails();
+    } catch (e) {
+      if (token !== detailsToken) return;
+      $("#epList").innerHTML = '<div class="ep-empty">Failed to load episodes</div>';
+      toast(String(e), true);
+    }
+  }
+
+  // ---------- episode list ----------
+  function renderEpisodeList() {
+    $("#epCount").textContent = `${episodes.length} episodes`;
+    const filter = $("#epSearch").value.trim();
+    $("#epList").innerHTML = "";
+    for (const ep of episodes) {
+      const mol = Math.floor(ep.episode_num);
+      const isFrac = ep.episode_num !== mol;
+      const match = !filter ||
+        String(mol).startsWith(filter) ||
+        (isFrac && String(ep.episode_num).startsWith(filter));
+      if (!match) continue;
+      const row = document.createElement("button");
+      row.className = "ep-row";
+      if (selectedEp && selectedEp.episode_num === ep.episode_num) row.classList.add("active");
+      row.dataset.ep = ep.episode_num;
+      row.innerHTML = `<span class="num">${fmtEp(ep.episode_num)}</span><span class="name">${isFrac ? `Episode ${fmtEp(ep.episode_num)}` : `Episode ${mol}`}</span>`;
+      row.addEventListener("click", () => {
+        const real = episodes.find(e => e.episode_num === ep.episode_num);
+        selectEpisode(real || ep, true);
+      });
+      $("#epList").appendChild(row);
+    }
+    if (!$("#epList").children.length) {
+      $("#epList").innerHTML = '<div class="ep-empty">No episodes match the filter.</div>';
+    }
+  }
+
+  function selectEpisode(ep, scroll = true) {
+    if (!ep) return;
+    selectedEp = ep;
+    $("#epDetailTitle").textContent = `Episode ${fmtEp(ep.episode_num)}`;
+    $("#epDetailSub").textContent = `${cap(provider || ep.provider || "")} · ${category.toUpperCase()} · ${cap(current.title)}`;
+    const rows = document.querySelectorAll(".ep-row");
+    rows.forEach(r => r.classList.toggle("active", Number(r.dataset.ep) === ep.episode_num));
+    if (scroll) {
+      const row = document.querySelector(`.ep-row[data-ep="${ep.episode_num}"]`);
+      if (row) row.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+  }
+
+  // ---------- playback ----------
+  async function playEp(ep) {
+    if (!ep) return toast("No episode selected", true);
+    const player = $("#playerSel").value;
+    toast(`Resolving stream for Ep ${fmtEp(ep.episode_num)} with ${player.toUpperCase()}…`);
+    try {
+      const api = await getApi();
+      const res = await api.play_episode(
+        current.id, ep.episode_num, player, ep.provider || provider, category
+      );
+      if (res && res.ok) {
+        toast(`Playing with ${(res.player || player).toUpperCase()}`);
+      } else {
+        toast((res && res.error) || "Playback failed", true);
+      }
+    } catch (e) {
+      toast(String(e), true);
+    }
+  }
+  $("#btnPlayNow").addEventListener("click", () => playEp(selectedEp));
+
+  $("#actionPrev").addEventListener("click", () => {
+    if (!episodes.length) return;
+    const idx = episodes.findIndex(e => selectedEp && e.episode_num === selectedEp.episode_num);
+    const target = idx > 0 ? episodes[idx - 1] : episodes[episodes.length - 1];
+    selectEpisode(target, true);
+  });
+  $("#actionNext").addEventListener("click", () => {
+    if (!episodes.length) return;
+    const idx = episodes.findIndex(e => selectedEp && e.episode_num === selectedEp.episode_num);
+    const target = idx >= 0 && idx < episodes.length - 1 ? episodes[idx + 1] : episodes[0];
+    selectEpisode(target, true);
+  });
+
+  // ---------- back ----------
+  $("#btnBack").addEventListener("click", () => {
+    detailsToken++;               // invalidate any in-flight details render
+    showView("home-view");
+    current = null; details = null; selectedEp = null;
+  });
+
+  // ---------- synopsis toggle ----------
+  $("#synToggle").addEventListener("click", () => {
+    const box = $("#detSynopsis").parentElement;
+    const expanded = box.classList.toggle("expanded");
+    $("#synToggle").textContent = expanded ? "Show less" : "Show more";
+  });
+
+  // ---------- episode search ----------
+  let epSearchTimer;
+  $("#epSearch").addEventListener("input", () => {
+    clearTimeout(epSearchTimer);
+    epSearchTimer = setTimeout(renderEpisodeList, 120);
+  });
+  $("#epSearch").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      const first = $("#epList .ep-row");
+      if (first) first.click();
+    }
+  });
+
+  // ---------- watch together ----------
+  function refreshWt() {
+    getApi().then(api => {
+      if (!api) return;
+      return api.watch_status().then(s => {
+        const bar = $("#wtBar");
+        const dot = bar.querySelector(".dot");
+        const text = $("#wtText");
+        const leave = $("#btnLeave");
+        if (s && s.active) {
+          bar.classList.add("active");
+          text.textContent = `Watch Together: ${s.role} in room ${s.code}`;
+          leave.style.display = "inline-block";
+        } else {
+          bar.classList.remove("active");
+          text.textContent = "Watch Together: offline";
+          leave.style.display = "none";
+        }
+      }).catch(() => {});
+    }).catch(() => {});
+  }
+
+  async function doHost() {
+    const player = $("#playerSel").value;
+    try {
+      const api = await getApi();
+      const r = await api.host_room(player);
+      if (r && r.ok) toast(`Room hosted! Code: ${r.code}`);
+      else toast((r && r.error) || "Failed to host room", true);
+    } catch (e) { toast(String(e), true); }
+    refreshWt();
+  }
+  $("#btnHost").addEventListener("click", doHost);
+
+  async function doJoin() {
+    const code = prompt("Enter 6-digit room code:");
+    if (!code) return;
+    const player = $("#playerSel").value;
+    try {
+      const api = await getApi();
+      const r = await api.join_room(code, player);
+      if (r && r.ok) toast(`Joined room ${r.code}`);
+      else toast((r && r.error) || "Failed to join room", true);
+    } catch (e) { toast(String(e), true); }
+    refreshWt();
+  }
+  $("#btnJoin").addEventListener("click", doJoin);
+
+  $("#btnLeave").addEventListener("click", async () => {
+    try { const api = await getApi(); await api.leave_room(); } catch (e) {}
+    toast("Left the room");
+    refreshWt();
+  });
+
+  // ---------- helpers ----------
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g,
+      c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+  function fmtEp(n) {
+    const f = parseFloat(n);
+    return Number.isInteger(f) ? String(f) : String(f);
+  }
+  function cap(s) {
+    return String(s == null ? "" : s).replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+  }
+
+  refreshWt();
+  loadTrending();
+</script>
+</body>
+</html>

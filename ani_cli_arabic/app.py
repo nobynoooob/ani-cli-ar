@@ -72,6 +72,7 @@ class AniCliArApp:
         parser.add_argument('-U', '--update', action='store_true', help="Self-update from PyPI via pip")
         parser.add_argument('-t', '--test', action='store_true', help="Include pre-release/test versions when updating")
         parser.add_argument('-i', '--interactive', action='store_true', help="Force minimal interactive CLI mode")
+        parser.add_argument('--gui', action='store_true', help="Launch the desktop GUI (requires pywebview)")
         parser.add_argument('-v', '--version', action='store_true', help="Show version information")
         parser.add_argument('--sub', action='store_true', help="Override: use English Subtitled streams")
         parser.add_argument('--dub', action='store_true', help="Override: use English Dubbed streams")
@@ -82,6 +83,11 @@ class AniCliArApp:
         parser.add_argument('query', nargs='*', help="Anime name to search for")
         
         args = parser.parse_args()
+
+        if args.gui:
+            from .gui import run_gui
+            run_gui()
+            sys.exit(0)
 
         if args.stats:
             from .stats import render_stats

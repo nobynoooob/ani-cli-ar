@@ -51,10 +51,17 @@ Changelog = "https://github.com/np4abdou1/ani-cli-arabic/releases"
 [project.scripts]
 ani-cli-arabic = "ani_cli_arabic.app:main"
 ani-cli-ar = "ani_cli_arabic.app:main"
+ani-cli-ar-gui = "ani_cli_arabic.gui:main"
+
+[project.optional-dependencies]
+gui = ["pywebview>=4.0"]
 
 [tool.setuptools]
 packages = {find = {include = ["ani_cli_arabic*"]}}
 include-package-data = true
+
+[tool.setuptools.package-data]
+ani_cli_arabic = ["ui/*.html"]
 
 [tool.setuptools.dynamic]
 version = {attr = "ani_cli_arabic.version.__version__"}
