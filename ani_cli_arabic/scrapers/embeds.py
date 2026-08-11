@@ -130,6 +130,12 @@ def _resolve_via_browser(embed_url: str, ref_url: str) -> str:
         u = _unescape(url.strip().rstrip('"').rstrip("'"))
         return u if _is_media_url(u) else ""
 
+    try:
+        from ..playwright_bootstrap import ensure_playwright_chromium
+        ensure_playwright_chromium()
+    except Exception:
+        pass
+
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=True,

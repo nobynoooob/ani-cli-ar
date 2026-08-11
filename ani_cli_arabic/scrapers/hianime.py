@@ -106,6 +106,11 @@ class HiAnimeScraper(BaseScraper):
             from playwright.sync_api import sync_playwright
         except ImportError:
             return ""
+        try:
+            from ..playwright_bootstrap import ensure_playwright_chromium
+            ensure_playwright_chromium()
+        except Exception:
+            pass
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
             ctx = browser.new_context(user_agent=USER_AGENT)

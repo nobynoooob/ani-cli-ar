@@ -13,8 +13,22 @@ permissions:
   contents: write
 
 jobs:
-  build:
-    runs-on: windows-latest
+  # -------------------------------------------------------------------------
+  # GUI build: pywebview desktop app for Windows + Linux.
+  # Slim PyInstaller one-file build (no Playwright browser binaries, no
+  # numpy/PIL/tkinter) so the download stays a fraction of the old 430 MB bundle.
+  # -------------------------------------------------------------------------
+  build-gui:
+    name: build-gui (${{ matrix.os-short }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            os-short: windows
+          - os: ubuntu-latest
+            os-short: linux
 
     steps:
       - name: Checkout repository
@@ -25,13 +39,32 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install dependencies
+      - name: Install dependencies (Windows)
+        if: runner.os == 'Windows'
         run: |
           python -m pip install --upgrade pip
           pip install -e .
-          pip install pywebview pyinstaller pythonnet
+          pip install pyinstaller "pywebview>=4.0" pythonnet
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev gir1.2-webkit2-4.1 \
+            python3-gi python3-gi-cairo libgirepository-1.0-dev \
+            mpv python3-pip
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pyinstaller "pywebview[gtk]"
+
+      - name: Verify WebKit introspection bindings
+        if: runner.os == 'Linux'
+        run: |
+          python -c "import gi; gi.require_version('WebKit2', '4.1'); from gi.repository import WebKit2; print('WebKit2 4.1 OK')"
 
       - name: Ensure WebView2 runtime present
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           # pywebview's EdgeChromium/winforms backends need the WebView2
@@ -47,27 +80,8 @@ jobs:
             Write-Host "WebView2 runtime present: $($present.pv)"
           }
 
-      - name: Install Playwright browsers
-        run: |
-          python -m playwright install chromium
-          echo "PLAYWRIGHT_BROWSERS_PATH is: $env:LOCALAPPDATA\ms-playwright"
-
-      - name: Verify Playwright Chromium before building
-        shell: pwsh
-        run: |
-          $browserDir = Join-Path $env:LOCALAPPDATA "ms-playwright"
-          if (-not (Test-Path $browserDir)) {
-            Write-Host "::error::Playwright chromium not found (expected at $browserDir)"
-            exit 1
-          }
-          $chromium = Get-ChildItem -Path $browserDir -Filter "chromium-*" -Directory | Select-Object -First 1
-          if (-not $chromium) {
-            Write-Host "::error::No chromium-* folder under $browserDir"
-            exit 1
-          }
-          Write-Host "Chromium found: $($chromium.FullName)"
-
       - name: Download and bundle mpv
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Continue"
@@ -137,32 +151,84 @@ jobs:
             New-Item -ItemType Directory -Force -Path "mpv" | Out-Null
           }
 
-      - name: Build executable
+      - name: Build GUI executable (Windows)
+        if: runner.os == 'Windows'
         shell: pwsh
-        # --bundle-mpv auto-detects the bundled mpv: _find_mpv_dir() prefers the
-        # local mpv/ directory (populated by the download step) before PATH, so
-        # no dynamic space-joined argument is needed (a string like
-        # "--mpv-dir mpv" would be passed by PowerShell as a single token).
+        # Slim build: no --bundle-browser (Chromium is downloaded on first use
+        # via ensure_playwright_chromium) and heavy unused modules are excluded.
+        # Note: `email` is NOT excluded — httpx/websockets/cryptography import
+        # email.* at import time and would crash the GUI.
         run: |
-          python build_desktop.py `
-            --bundle-mpv `
-            --bundle-browser `
+          python build_desktop.py --target gui --bundle-mpv `
+            --exclude-module tkinter `
+            --exclude-module unittest `
+            --exclude-module pydoc `
+            --exclude-module numpy `
+            --exclude-module PIL `
+            --exclude-module PyQt6 `
+            --exclude-module PySide6 `
+            --exclude-module customtkinter `
+            --exe-name ani-cli-ar-gui-windows `
             --zip
 
-      - name: Upload executable artifact
+      - name: Build GUI executable (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          python build_desktop.py --target gui \
+            --exclude-module tkinter \
+            --exclude-module unittest \
+            --exclude-module pydoc \
+            --exclude-module numpy \
+            --exclude-module PIL \
+            --exclude-module PyQt6 \
+            --exclude-module PySide6 \
+            --exclude-module customtkinter \
+            --exe-name ani-cli-ar-gui
+
+      - name: Assemble Linux GUI bundle
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p ani-cli-ar-gui
+          cp dist/ani-cli-ar-gui ani-cli-ar-gui/ani-cli-ar-gui
+          cp assets/ani-cli-ar.desktop ani-cli-ar-gui/ani-cli-ar.desktop
+          cp assets/icon.png ani-cli-ar-gui/ani-cli-ar.png
+          cp scripts/install_linux.sh ani-cli-ar-gui/install.sh
+          chmod +x ani-cli-ar-gui/install.sh ani-cli-ar-gui/ani-cli-ar-gui
+          tar -czf ani-cli-ar-gui-linux.tar.gz ani-cli-ar-gui
+          echo "Bundled:"
+          ls -lh ani-cli-ar-gui/ ani-cli-ar-gui-linux.tar.gz
+
+      - name: Upload GUI artifacts (Windows)
+        if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
-          name: ani-cli-ar-gui-exe
-          path: dist/ani-cli-ar-gui.exe
+          name: ani-cli-ar-gui-windows
+          path: |
+            dist/ani-cli-ar-gui-windows.exe
+            dist/ani-cli-ar-gui-windows.zip
 
-      - name: Upload portable zip artifact
+      - name: Upload GUI artifacts (Linux)
+        if: runner.os == 'Linux'
         uses: actions/upload-artifact@v4
         with:
-          name: ani-cli-ar-windows-zip
-          path: dist/ani-cli-ar-v*.zip
+          name: ani-cli-ar-gui-linux
+          path: ani-cli-ar-gui-linux.tar.gz
 
-  build-linux:
-    runs-on: ubuntu-latest
+  # -------------------------------------------------------------------------
+  # CLI build: terminal TUI for Windows + Linux. Aggressively excludes every
+  # GUI framework (pywebview, Qt, customtkinter) so no GUI pixels ship.
+  # -------------------------------------------------------------------------
+  build-cli:
+    name: build-cli (${{ matrix.os-short }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            os-short: windows
+          - os: ubuntu-latest
+            os-short: linux
 
     steps:
       - name: Checkout repository
@@ -173,49 +239,75 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install system dependencies
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev gir1.2-webkit2-4.1 \
-            python3-gi python3-gi-cairo libgirepository-1.0-dev \
-            mpv python3-pip
+          sudo apt-get install -y mpv python3-pip
 
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -e .
-          pip install "pywebview[gtk]" pyinstaller
+          pip install pyinstaller
 
-      - name: Verify WebKit introspection bindings
+      - name: Build CLI executable (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
         run: |
-          python -c "import gi; gi.require_version('WebKit2', '4.1'); from gi.repository import WebKit2; print('WebKit2 4.1 OK')"
+          python build_desktop.py --target cli `
+            --exclude-module PyQt6 `
+            --exclude-module PySide6 `
+            --exclude-module customtkinter `
+            --exclude-module webview `
+            --exclude-module tkinter `
+            --exclude-module unittest `
+            --exclude-module pydoc `
+            --exe-name ani-cli-ar-cli-windows `
+            --zip
 
-      - name: Build executable
+      - name: Build CLI executable (Linux)
+        if: runner.os == 'Linux'
         run: |
-          python build_desktop.py
+          python build_desktop.py --target cli \
+            --exclude-module PyQt6 \
+            --exclude-module PySide6 \
+            --exclude-module customtkinter \
+            --exclude-module webview \
+            --exclude-module tkinter \
+            --exclude-module unittest \
+            --exclude-module pydoc \
+            --exe-name ani-cli-ar-cli
 
-      - name: Assemble bundle directory
+      - name: Assemble Linux CLI bundle
+        if: runner.os == 'Linux'
         run: |
-          VERSION=$(python -c "from ani_cli_arabic.version import __version__; print(__version__)")
-          mkdir -p ani-cli-ar-gui
-          cp dist/ani-cli-ar-gui ani-cli-ar-gui/ani-cli-ar-gui
-          cp assets/ani-cli-ar.desktop ani-cli-ar-gui/ani-cli-ar.desktop
-          cp assets/icon.png ani-cli-ar-gui/ani-cli-ar.png
-          cp scripts/install_linux.sh ani-cli-ar-gui/install.sh
-          chmod +x ani-cli-ar-gui/install.sh ani-cli-ar-gui/ani-cli-ar-gui
-          tar -czf "ani-cli-ar-v${VERSION}-linux-x86_64.tar.gz" ani-cli-ar-gui
+          mkdir -p ani-cli-ar-cli
+          cp dist/ani-cli-ar-cli ani-cli-ar-cli/ani-cli-ar-cli
+          cp scripts/install_linux.sh ani-cli-ar-cli/install.sh
+          chmod +x ani-cli-ar-cli/install.sh ani-cli-ar-cli/ani-cli-ar-cli
+          tar -czf ani-cli-ar-cli-linux.tar.gz ani-cli-ar-cli
           echo "Bundled:"
-          ls -lh ani-cli-ar-gui/ "ani-cli-ar-v${VERSION}-linux-x86_64.tar.gz"
+          ls -lh ani-cli-ar-cli/ ani-cli-ar-cli-linux.tar.gz
 
-      - name: Upload Linux tarball artifact
+      - name: Upload CLI artifacts (Windows)
+        if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
-          name: ani-cli-ar-linux-tar
-          path: ani-cli-ar-v*.tar.gz
+          name: ani-cli-ar-cli-windows
+          path: |
+            dist/ani-cli-ar-cli-windows.exe
+            dist/ani-cli-ar-cli-windows.zip
+
+      - name: Upload CLI artifacts (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ani-cli-ar-cli-linux
+          path: ani-cli-ar-cli-linux.tar.gz
 
   release:
-    needs: [build, build-linux]
+    needs: [build-gui, build-cli]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
 
@@ -225,6 +317,9 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+
+      - name: List release assets
+        run: ls -lh artifacts/
 
       - name: Create release
         uses: softprops/action-gh-release@v2

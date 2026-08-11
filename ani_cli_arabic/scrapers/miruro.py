@@ -123,6 +123,12 @@ class MiruroScraper(BaseScraper):
     def _pipe_fetch(self, payload: dict) -> Optional[dict]:
         from playwright.sync_api import sync_playwright
 
+        try:
+            from ..playwright_bootstrap import ensure_playwright_chromium
+            ensure_playwright_chromium()
+        except Exception:
+            pass
+
         last_error = None
         for attempt in range(_MAX_RETRIES):
             if attempt > 0:

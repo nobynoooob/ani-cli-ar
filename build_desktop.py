@@ -1,26 +1,32 @@
 #!/usr/bin/env python3
-"""Build a standalone, zero-dependency desktop GUI executable for
-ani-cli-arabic using PyInstaller.
+"""Build standalone PyInstaller executables for ani-cli-arabic.
 
-Produces ``dist/ani-cli-ar-gui`` on Linux/macOS and
-``dist/ani-cli-ar-gui.exe`` on Windows.
+Two targets are supported:
 
-The output is a windowed (--noconsole) one-file executable that bundles the
-entire Python runtime, the ``ani_cli_arabic`` package, its ``ui/`` static
-assets, and all third-party libraries (pywebview, playwright, httpx, ...).
+  * ``--target gui`` — the pywebview desktop GUI. Windowed (--noconsole)
+    one-file executable that bundles the entire Python runtime, the
+    ``ani_cli_arabic`` package, its ``ui/`` static assets, pywebview and all
+    third-party libraries.
+  * ``--target cli`` — the terminal TUI. A console one-file executable that
+    uses ``main.py`` as its entry point and aggressively excludes every GUI
+    framework so no pywebview / Qt / Tk pixels are shipped.
+
+Note that the Playwright Chromium *browser* is intentionally NOT bundled
+(that is what bloated old builds to 400+ MB). The Playwright driver is bundled
+(required to spawn a browser), and the actual Chromium binary is downloaded on
+first use by ``ani_cli_arabic.playwright_bootstrap.ensure_playwright_chromium``.
 
 External system dependencies are still required at runtime (not bundled by
 PyInstaller): a WebView2 runtime on Windows and WebKit2GTK + GTK3 on Linux.
-mpv for playback and the Playwright Chromium browser CAN be bundled so the
-resulting executable is fully portable (double-click to launch).
+mpv CAN be bundled for the GUI so the result is portable (double-click to
+launch) — as in the downloadable release.
 
 Usage:
-    python build_desktop.py                         # default build
-    python build_desktop.py --debug                 # keep PyInstaller output visible
-    python build_desktop.py --bundle-mpv            # embed mpv (PATH autodetect or mpv/)
-    python build_desktop.py --mpv-dir .cache/mpv    # bundle mpv from an explicit dir
-    python build_desktop.py --bundle-browser        # embed Playwright Chromium
-    python build_desktop.py --zip                   # also produce a portable .zip
+    python build_desktop.py                            # GUI build
+    python build_desktop.py --target cli               # CLI build
+    python build_desktop.py --target gui --bundle-mpv  # embed mpv (PATH or mpv/)
+    python build_desktop.py --exclude-module numpy     # extra module exclusions
+    python build_desktop.py --zip                      # also produce {exe}.zip
 """
 import argparse
 import os
@@ -33,7 +39,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 PKG = "ani_cli_arabic"
-ENTRY_NAME = "ani-cli-ar-gui"
+ENTRY_GUI = "ani-cli-ar-gui"
+ENTRY_CLI = "ani-cli-ar-cli"
 
 # Browser bundle is placed under this name inside the PyInstaller bundle and
 # advertised to Playwright via the PLAYWRIGHT_BROWSERS_PATH runtime hook.
@@ -133,24 +140,6 @@ def _create_browser_hook() -> "Path | None":
     return hook
 
 
-def _read_version():
-    """Best-effort read of the package version, without importing the package
-    (which may trigger heavy imports on an exotic machine)."""
-    try:
-        from ani_cli_arabic.version import __version__
-    except Exception:
-        try:
-            text = (ROOT / PKG / "version.py").read_text(encoding="utf-8")
-            for line in text.splitlines():
-                line = line.strip()
-                if line.startswith("__version__"):
-                    return line.split("=", 1)[1].strip().strip('"').strip("'")
-        except OSError:
-            return "0.0.0"
-        return "0.0.0"
-    return __version__
-
-
 def _webview_platform_imports() -> list:
     """pywebview backends are loaded dynamically at runtime (guilib.initialize
     picks one per OS). Enumerate the platform modules that actually exist in
@@ -198,11 +187,12 @@ def _webview_runtime_imports() -> list:
     return ["clr", "clr_loader", "pythonnet"]
 
 
-def _hidden_imports() -> list:
+def _hidden_imports(target: str) -> list:
     """Modules imported lazily/dynamically that static analysis misses."""
-    _platforms = _webview_platform_imports()
-    _win_runtime = _webview_runtime_imports()
-    return [
+    is_gui = target == "gui"
+    _platforms = _webview_platform_imports() if is_gui else []
+    _win_runtime = _webview_runtime_imports() if is_gui else []
+    mods = [
         # package modules
         f"{PKG}.api", f"{PKG}.app", f"{PKG}.cli", f"{PKG}.config",
         f"{PKG}.deps", f"{PKG}.discord_rpc", f"{PKG}.favorites",
@@ -216,12 +206,6 @@ def _hidden_imports() -> list:
         f"{PKG}.scrapers.allanime", f"{PKG}.scrapers.api_provider",
         f"{PKG}.scrapers.gogoanime", f"{PKG}.scrapers.mkissa",
         f"{PKG}.scrapers.embeds", f"{PKG}.scrapers.provider_manager",
-        # pywebview backends (loaded dynamically at runtime)
-        * _platforms,
-        * _win_runtime,
-        # pywebview HTTP server / JS bridge deps (imported lazily)
-        "webview", "webview.platforms", "webview.http", "bottle",
-        "proxy_tools", "typing_extensions",
         # stream extraction / providers
         "playwright", "playwright.sync_api", "playwright.async_api",
         "httpx", "cryptography", "rich", "rich.console", "rich.panel",
@@ -233,35 +217,87 @@ def _hidden_imports() -> list:
         # optional crypto deps used by allanime
         "Cryptodome", "Cryptodome.Cipher", "Cryptodome.Util",
     ]
+    if is_gui:
+        # pywebview backends (loaded dynamically at runtime) plus its HTTP
+        # server / JS bridge deps.
+        mods += [
+            *_platforms,
+            *_win_runtime,
+            "webview", "webview.platforms", "webview.http", "bottle",
+            "proxy_tools", "typing_extensions",
+        ]
+    return mods
 
 
 def _collect_all() -> list:
     """Modules that must be bundled *wholesale* (data + binaries + submodules).
     Playwright's node driver lives in ``playwright/driver/`` and is required
-    at runtime to spawn the browser — ``collect-submodules`` alone misses it."""
+    at runtime to spawn the browser — ``collect-submodules`` alone misses it.
+    (The Chromium *browser* itself is deliberately NOT bundled; it is installed
+    on first use via ``ensure_playwright_chromium``.)"""
     return ["playwright"]
 
 
-def _collect_submodules() -> list:
+def _collect_submodules(target: str) -> list:
     """Modules that ship many submodules we want to bundle wholesale."""
-    mods = ["webview", "rich", "httpx", "websockets"]
-    if os.name == "nt":
-        mods.append("clr_loader")
-        mods.append("pythonnet")
+    mods = ["rich", "httpx", "websockets"]
+    if target == "gui":
+        mods.insert(0, "webview")
+        if os.name == "nt":
+            mods.append("clr_loader")
+            mods.append("pythonnet")
+        else:
+            mods.append("realtime")
     else:
+        # CLI: no webview, but watch-together still needs the realtime lib.
         mods.append("realtime")
     return mods
 
 
-def _excludes() -> list:
-    return [
+def _excludes(target: str, extra: list) -> list:
+    """Modules never needed by the target build. ``extra`` holds user-supplied
+    ``--exclude-module`` names."""
+    base = [
         "IPython", "jupyter", "notebook", "matplotlib", "scipy", "pandas",
-        "tkinter", "PIL.ImageShow", "PIL.ImageTk", "pytest", "unittest",
+        "pytest",
     ]
+    if target == "gui":
+        # The webview GUI never imports requests/numpy/PIL at runtime (the
+        # CLI-only modules that do — app, ui, deps, discord_rpc — are never
+        # imported by gui.py), so their heavy deps can be dropped. Note that
+        # `email` must NOT be excluded: httpx/websockets/cryptography import
+        # email.* at module import time and would crash the GUI. PyQt/PySide/
+        # customtkinter are no-ops (pywebview uses WinForms/GTK) but guard
+        # against a stray Qt import.
+        base += [
+            "tkinter", "unittest", "pydoc",
+            "numpy", "PIL", "PIL.ImageShow", "PIL.ImageTk",
+            "PyQt5", "PyQt6", "PySide2", "PySide6", "customtkinter",
+        ]
+    else:
+        # CLI build: aggressively drop every GUI framework. email must stay
+        # (requests/httpx mail parsing is used for downloads).
+        base += [
+            "tkinter", "unittest", "pydoc",
+            "webview", "bottle", "proxy_tools",
+            "pythonnet", "clr_loader",
+            "PyQt5", "PyQt6", "PySide2", "PySide6", "customtkinter",
+        ]
+    return list(dict.fromkeys(base + extra))
+
+
+def _cli_entry_script() -> "Path | None":
+    """The CLI build uses ``main.py`` at the repo root as its PyInstaller entry
+    (it reconfigures the console, then dispatches to ``ani_cli_arabic.app``)."""
+    entry = ROOT / "main.py"
+    return entry if entry.exists() else None
 
 
 def build():
     parser = argparse.ArgumentParser(description="Build desktop GUI executable")
+    parser.add_argument("--target", choices=("gui", "cli"), default="gui",
+                        help="Build the pywebview GUI (default) or the terminal "
+                             "CLI (aggressively excludes GUI frameworks)")
     parser.add_argument("--debug", action="store_true",
                         help="Show full PyInstaller output")
     parser.add_argument("--bundle-mpv", action="store_true",
@@ -275,19 +311,21 @@ def build():
     parser.add_argument("--browser-dir", metavar="DIR",
                         help="Explicit ms-playwright directory to bundle "
                              "(implies --bundle-browser)")
-    parser.add_argument("--exe-name", metavar="NAME", default=ENTRY_NAME,
-                        help=f"Output executable name (default: {ENTRY_NAME})")
+    parser.add_argument("--exclude-module", metavar="NAME", action="append",
+                        default=[],
+                        help="Extra module to exclude from the bundle "
+                             "(repeatable)")
+    parser.add_argument("--exe-name", metavar="NAME",
+                        help=f"Output executable name (default: per target — "
+                             f"{ENTRY_GUI} or {ENTRY_CLI})")
     parser.add_argument("--zip", action="store_true",
-                        help="Also produce dist/ani-cli-ar-<version>-<os>-<arch>.zip")
-    parser.add_argument("--version", metavar="VER",
-                        help="Version label for the zip filename "
-                             "(default: read from version.py)")
+                        help="Also produce dist/<exe-name>.zip")
     parser.add_argument("--skip-install", action="store_true",
                         help="Fail instead of auto-installing PyInstaller")
     args = parser.parse_args()
 
     print("=" * 60)
-    print("  ani-cli-arabic Desktop GUI Builder")
+    print(f"  ani-cli-arabic {'GUI' if args.target == 'gui' else 'CLI'} Builder")
     print("=" * 60)
 
     if not _check_pyinstaller():
@@ -305,16 +343,23 @@ def build():
     print(f"[*] Python: {sys.version.split()[0]}")
     print(f"[*] PyInstaller: {PyInstaller.__version__}")
 
-    # GUI entry requires pywebview at runtime.
-    try:
-        import webview  # noqa: F401
-    except ImportError:
-        _err("pywebview is required. Install with: pip install pywebview")
+    is_gui = args.target == "gui"
+    exe_name = args.exe_name or (ENTRY_GUI if is_gui else ENTRY_CLI)
 
-    entry = _create_entry_script()
+    # GUI entry requires pywebview at runtime.
+    if is_gui:
+        try:
+            import webview  # noqa: F401
+        except ImportError:
+            _err("pywebview is required for a GUI build. Install with: "
+                 "pip install 'pywebview>=4.0'")
+
+    entry = _create_entry_script() if is_gui else _cli_entry_script()
+    if entry is None:
+        _err("CLI entry script main.py not found.")
 
     ui_dir = ROOT / PKG / "ui"
-    if not (ui_dir / "index.html").exists():
+    if is_gui and not (ui_dir / "index.html").exists():
         _err(f"Missing GUI assets in {ui_dir}")
 
     icon = None
@@ -329,11 +374,13 @@ def build():
 
     # PyInstaller --add-data/--add-binary separator differs between OS families.
     sep = ";" if os.name == "nt" else ":"
-    # Use os.fspath() so Windows drive-letter/backslash paths are passed to
-    # PyInstaller verbatim (no accidental forward-slash rewrites or doubled
-    # backslashes in the spec we later attach to the bundle).
-    ui_dir_str = os.fspath(ui_dir)
-    add_data = [f"{ui_dir_str}{sep}{PKG}/ui"]
+    add_data = []
+    if is_gui:
+        # Use os.fspath() so Windows drive-letter/backslash paths are passed to
+        # PyInstaller verbatim (no accidental forward-slash rewrites or doubled
+        # backslashes in the spec we later attach to the bundle).
+        ui_dir_str = os.fspath(ui_dir)
+        add_data.append(f"{ui_dir_str}{sep}{PKG}/ui")
     add_binaries = []
 
     # ----- mpv bundling -----------------------------------------------------
@@ -364,9 +411,8 @@ def build():
     cmd = [
         sys.executable, "-m", "PyInstaller",
         str(entry),
-        "--name", args.exe_name,
+        "--name", exe_name,
         "--onefile",
-        "--noconsole",
         "--clean",
         "--noconfirm",
         "--distpath", str(ROOT / "dist"),
@@ -374,19 +420,23 @@ def build():
         "--specpath", str(ROOT / "build"),
     ]
 
+    if is_gui:
+        # The GUI is a windowed app; the CLI must keep its console for the TUI.
+        cmd.append("--noconsole")
+
     for data in add_data:
         cmd += ["--add-data", data]
     for binary in add_binaries:
         cmd += ["--add-binary", binary]
     if browser_dir:
         cmd += ["--runtime-hook", str(ROOT / "build" / "_browsers_path_hook.py")]
-    for mod in _hidden_imports():
+    for mod in _hidden_imports(args.target):
         cmd += ["--hidden-import", mod]
-    for mod in _collect_submodules():
+    for mod in _collect_submodules(args.target):
         cmd += ["--collect-submodules", mod]
     for mod in _collect_all():
         cmd += ["--collect-all", mod]
-    for mod in _excludes():
+    for mod in _excludes(args.target, args.exclude_module):
         cmd += ["--exclude-module", mod]
     if icon:
         cmd += ["--icon", str(icon)]
@@ -394,15 +444,15 @@ def build():
     if not args.debug:
         cmd += ["--log-level", "ERROR"]
 
-    exe_name = args.exe_name + (".exe" if os.name == "nt" else "")
-    print(f"[*] Output: dist/{exe_name}")
+    exe_name_os = exe_name + (".exe" if os.name == "nt" else "")
+    print(f"[*] Output: dist/{exe_name_os}")
     print("[*] Building...\n")
 
     result = subprocess.run(cmd, cwd=str(ROOT))
     if result.returncode != 0:
         _err("PyInstaller build failed (re-run with --debug for details).")
 
-    exe = ROOT / "dist" / exe_name
+    exe = ROOT / "dist" / exe_name_os
     if not exe.exists():
         _err(f"Build reported success but {exe} was not found.")
 
@@ -414,16 +464,14 @@ def build():
 
     # ----- portable zip ------------------------------------------------------
     if args.zip:
-        version = (args.version or _read_version()).lstrip("v")
-        os_short = {"Windows": "windows", "Darwin": "macos",
-                    "Linux": "linux"}.get(system, "unknown")
-        arch = platform.machine().lower().replace("x86_64", "x86_64").replace("amd64", "x86_64")
-        zip_name = f"ani-cli-ar-v{version}-{os_short}-{arch}.zip"
+        zip_name = f"{exe_name}.zip"
         zip_path = ROOT / "dist" / zip_name
+        readme_header = "Double-click %s to launch the GUI.\n\n" % exe_name_os if is_gui else \
+            "Run %s from a terminal to open the TUI.\n\n" % exe_name_os
         readme = (
             "ani-cli-arabic - portable build\n"
             "=============================\n\n"
-            "Double-click %s to launch the GUI.\n\n"
+            + readme_header +
             "Bundled:\n"
             "  - Python runtime and all application libraries\n"
             "  - %s\n"
@@ -433,13 +481,12 @@ def build():
             "  - WebView2 runtime on Windows (preinstalled on Windows 10/11)\n"
             "  - WebKit2GTK / GTK3 on Linux\n"
         ) % (
-            exe_name,
             f"mpv player ({mpv_dir})" if mpv_dir else "no mpv (install mpv, or app auto-installs it)",
             f"  - Playwright Chromium browser ({browser_dir})\n" if browser_dir else "",
             "\n",
         )
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.write(exe, arcname=exe_name)
+            zf.write(exe, arcname=exe_name_os)
             readme_name = "README.txt"
             zf.writestr(readme_name, readme)
         print(f"[*] Portable zip: {zip_path}")
@@ -453,9 +500,8 @@ def build():
     if not mpv_dir:
         print("    mpv (playback). Use --bundle-mpv/--mpv-dir to bundle it.")
     if not browser_dir:
-        print("    Playwright Chromium browser. Use --bundle-browser/--browser-dir")
-        print("    to bundle it, or install on the target machine with:\n"
-              "      playwright install chromium")
+        print("    Playwright Chromium browser. The app auto-installs it on first")
+        print("    use (python -m playwright install chromium equivalent).")
     return 0
 
 

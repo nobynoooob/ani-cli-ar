@@ -72,6 +72,7 @@
 | `cli.py` | Minimal CLI mode |
 | `watch_together.py` | Watch Together: `SupabaseRealtime`, `MpvIpcClient`, `VlcIpcClient`, `WatchHost`/`WatchGuest` |
 | `player.py` | `PlayerManager`: mpv/VLC arg builders, `build_vlc_args` (rc + lock flags) |
+| `playwright_bootstrap.py` | stdlib-only runtime Chromium auto-install (`ensure_playwright_chromium`) used by scrapers when the browser isn't bundled |
 
 ## External tooling
 - **mpv** required for playback (auto-installed by `deps.py`)
@@ -80,6 +81,11 @@
 - **Playwright** (Chromium) for stream extraction on miruro (primary), mkissa, and gogoanime — browser shared at class level in MiruroScraper
 - Set `ANI_API_BASE_URL` environment variable to point the `api` scraper at a self-hosted Consumet instance
 - `cryptography` (not pycryptodome) is required by `allanime.py` for the best-effort `tobeparsed` AES-256-CTR decrypt
+
+## Packaging / releases
+- `build_desktop.py` supports `--target {gui,cli}` (default `gui`). GUI = windowed one-file exe with `ui/` assets; CLI = console one-file exe using `main.py`, excludes all GUI frameworks. `--exclude-module` adds exclusions, `--zip` produces `dist/<exe>.zip`.
+- Release binaries do **NOT** bundle the Playwright Chromium browser (that bloated old builds to 430 MB) or its `email`/`numpy`/`PIL` heavy deps. The Playwright driver is still bundled via `--collect-all playwright`; on first stream use `playwright_bootstrap.ensure_playwright_chromium` downloads Chromium into the user's ms-playwright cache.
+- `.github/workflows/build.yml` runs two matrix jobs (`build-gui`, `build-cli`) for windows/linux and a `release` job that uploads `ani-cli-ar-{gui,cli}-{windows,linux}` assets. Windows GUI bundles mpv; Linux/CLI rely on system mpv.
 
 ## Version / packaging
 - Single source of version: `ani_cli_arabic/version.py:__version__` (currently `1.8.4`)

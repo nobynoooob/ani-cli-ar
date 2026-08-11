@@ -112,6 +112,12 @@ class MkissaScraper(BaseScraper):
         except ImportError:
             return None
 
+        try:
+            from ..playwright_bootstrap import ensure_playwright_chromium
+            ensure_playwright_chromium()
+        except Exception:
+            pass
+
         with sync_playwright() as p:
             browser = p.chromium.launch(
                 headless=True,
