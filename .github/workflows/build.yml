@@ -15,8 +15,9 @@ permissions:
 jobs:
   # -------------------------------------------------------------------------
   # GUI build: pywebview desktop app for Windows + Linux.
-  # Slim PyInstaller one-file build (no Playwright browser binaries, no
-  # numpy/PIL/tkinter) so the download stays a fraction of the old 430 MB bundle.
+  # Slim PyInstaller one-file build (no Playwright browser binaries) so the
+  # download stays a fraction of the old 430 MB bundle. numpy/PIL/email stay
+  # (package __init__ -> app -> ui.py imports them at startup).
   # -------------------------------------------------------------------------
   build-gui:
     name: build-gui (${{ matrix.os-short }})
@@ -156,15 +157,13 @@ jobs:
         shell: pwsh
         # Slim build: no --bundle-browser (Chromium is downloaded on first use
         # via ensure_playwright_chromium) and heavy unused modules are excluded.
-        # Note: `email` is NOT excluded — httpx/websockets/cryptography import
-        # email.* at import time and would crash the GUI.
+        # numpy/PIL/email are kept: importing the package pulls in app -> ui.py,
+        # which imports numpy + PIL at module load.
         run: |
           python build_desktop.py --target gui --bundle-mpv `
             --exclude-module tkinter `
             --exclude-module unittest `
             --exclude-module pydoc `
-            --exclude-module numpy `
-            --exclude-module PIL `
             --exclude-module PyQt6 `
             --exclude-module PySide6 `
             --exclude-module customtkinter `
@@ -178,8 +177,6 @@ jobs:
             --exclude-module tkinter \
             --exclude-module unittest \
             --exclude-module pydoc \
-            --exclude-module numpy \
-            --exclude-module PIL \
             --exclude-module PyQt6 \
             --exclude-module PySide6 \
             --exclude-module customtkinter \

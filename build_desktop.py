@@ -262,16 +262,15 @@ def _excludes(target: str, extra: list) -> list:
         "pytest",
     ]
     if target == "gui":
-        # The webview GUI never imports requests/numpy/PIL at runtime (the
-        # CLI-only modules that do — app, ui, deps, discord_rpc — are never
-        # imported by gui.py), so their heavy deps can be dropped. Note that
-        # `email` must NOT be excluded: httpx/websockets/cryptography import
-        # email.* at module import time and would crash the GUI. PyQt/PySide/
+        # `email`/`numpy`/`PIL` must NOT be excluded: importing the package
+        # (ani_cli_arabic/__init__.py) always pulls in app -> ui.py, which does
+        # `import numpy` and `from PIL import Image, ImageEnhance` at module
+        # load. httpx/websockets/cryptography also import email.* at import
+        # time. Excluding any of them crashes the GUI at startup. PyQt/PySide/
         # customtkinter are no-ops (pywebview uses WinForms/GTK) but guard
         # against a stray Qt import.
         base += [
             "tkinter", "unittest", "pydoc",
-            "numpy", "PIL", "PIL.ImageShow", "PIL.ImageTk",
             "PyQt5", "PyQt6", "PySide2", "PySide6", "customtkinter",
         ]
     else:

@@ -84,7 +84,7 @@
 
 ## Packaging / releases
 - `build_desktop.py` supports `--target {gui,cli}` (default `gui`). GUI = windowed one-file exe with `ui/` assets; CLI = console one-file exe using `main.py`, excludes all GUI frameworks. `--exclude-module` adds exclusions, `--zip` produces `dist/<exe>.zip`.
-- Release binaries do **NOT** bundle the Playwright Chromium browser (that bloated old builds to 430 MB) or its `email`/`numpy`/`PIL` heavy deps. The Playwright driver is still bundled via `--collect-all playwright`; on first stream use `playwright_bootstrap.ensure_playwright_chromium` downloads Chromium into the user's ms-playwright cache.
+- Release binaries do **NOT** bundle the Playwright Chromium browser (that bloated old builds to 430 MB). The Playwright driver is still bundled via `--collect-all playwright`; on first stream use `playwright_bootstrap.ensure_playwright_chromium` downloads Chromium into the user's ms-playwright cache. numpy/PIL/email are **kept** in every build: importing the package (`ani_cli_arabic/__init__.py`) unconditionally pulls in `app` → `ui.py`, which does `import numpy` / `from PIL import Image, ImageEnhance` at module load (and httpx/websockets/cryptography import `email.*`). Excluding any of them crashes both GUI and CLI at startup.
 - `.github/workflows/build.yml` runs two matrix jobs (`build-gui`, `build-cli`) for windows/linux and a `release` job that uploads `ani-cli-ar-{gui,cli}-{windows,linux}` assets. Windows GUI bundles mpv; Linux/CLI rely on system mpv.
 
 ## Version / packaging
