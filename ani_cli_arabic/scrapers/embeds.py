@@ -113,8 +113,10 @@ def extract_media_url(html: str) -> str:
     return ""
 
 
-def _resolve_via_browser(embed_url: str, ref_url: str) -> str:
+def _resolve_via_browser(embed_url: str, ref_url: str, cancel_event=None) -> str:
     # Uses the shared lazy browser runtime (browser launched once, reused).
+    if cancel_event is not None and cancel_event.is_set():
+        return ""
     from ._browser import browser_page
     from ._http_log import timed
 
@@ -158,6 +160,7 @@ def _resolve_via_browser(embed_url: str, ref_url: str) -> str:
                     "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})"
                 ),
                 timeout=12.0,
+                cancel_event=cancel_event,
             ) or ""
     except Exception:
         content = ""
@@ -167,7 +170,7 @@ def _resolve_via_browser(embed_url: str, ref_url: str) -> str:
     return extract_media_url(content)
 
 
-def resolve_embed(embed_url: str, referer: Optional[str] = None) -> Dict:
+def resolve_embed(embed_url: str, referer: Optional[str] = None, cancel_event=None) -> Dict:
     """Resolve an embed URL to a playable stream dict.
 
     Returns ``{"stream_url": ..., "headers": {...}}`` or ``{"stream_url": None, "headers": {}}``.
@@ -197,7 +200,9 @@ def resolve_embed(embed_url: str, referer: Optional[str] = None) -> Dict:
     except Exception:
         pass
 
-    media = _resolve_via_browser(url, referer or url)
+    if cancel_event is not None and cancel_event.is_set():
+        return {"stream_url": None, "headers": {}}
+    media = _resolve_via_browser(url, referer or url, cancel_event=cancel_event)
     if media:
         return {
             "stream_url": media,
@@ -219,6 +224,7 @@ def probe_embeds(
     resolver: Optional[Callable[[str], str]] = None,
     timeout: float = _HTTP_TIMEOUT,
     max_workers: int = 6,
+    cancel_event=None,
 ) -> str:
     """Probe several embed/source URLs in parallel, return the first playable URL.
 
@@ -229,7 +235,8 @@ def probe_embeds(
     (``referer`` is forwarded). The entire probe is bounded by ``timeout``
     seconds via ``as_completed`` so slow hosters (browser/CF fallbacks) never
     stall the caller — you get the fastest winner, guaranteed return within
-    ``timeout``.
+    ``timeout``. ``cancel_event`` (optional) aborts still-pending probes as
+    soon as it is set (a winner has been found, or the resolution was aborted).
 
     Returns "" when nothing playable surfaces before the deadline.
     """
@@ -237,15 +244,20 @@ def probe_embeds(
         return ""
 
     def default_resolver(url: str) -> str:
-        result = resolve_embed(url, referer=referer)
+        result = resolve_embed(url, referer=referer, cancel_event=cancel_event)
         return (result or {}).get("stream_url") or ""
 
     resolver = resolver or default_resolver
 
+    def cancellable(url: str) -> str:
+        if cancel_event is not None and cancel_event.is_set():
+            return ""
+        return _safe_resolve(resolver, url)
+
     executor = ThreadPoolExecutor(max_workers=max(max_workers, 1))
     try:
         futures = {
-            executor.submit(_safe_resolve, resolver, u): u for u in embed_urls
+            executor.submit(cancellable, u): u for u in embed_urls
         }
         try:
             # as_completed yields the fastest winner as it arrives; its own

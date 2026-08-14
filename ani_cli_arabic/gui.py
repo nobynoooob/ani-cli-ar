@@ -42,6 +42,26 @@ _CHOSEN_PROVIDER_TIMEOUT = 25.0
 _MAX_SEARCH_CACHE = 128
 _DETAIL_QUICK_WINDOW = 4.0
 
+
+def _supports_kwarg(fn, name: str) -> bool:
+    """True when ``fn`` accepts a keyword argument ``name``."""
+    try:
+        import inspect
+        return name in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def _call_maybe_cancel(scraper, method: str, *args, abort_event=None):
+    """Call ``scraper.method(*args)``, forwarding the abort event to the
+    scraper when it supports the ``cancel_event`` keyword."""
+    fn = getattr(scraper, method, None)
+    if fn is None:
+        return None
+    if abort_event is not None and _supports_kwarg(fn, "cancel_event"):
+        return fn(*args, cancel_event=abort_event)
+    return fn(*args)
+
 # Arabic Subtitle track — routes the GUI to the Arabic API pipeline (same
 # scraper-less flow the CLI uses for "Arabic Sub").
 ARABIC_CATEGORY = "ar_sub"
@@ -903,8 +923,8 @@ class JSApi:
         pm = self._pm()
         names = [n for n in pm.available_providers if pm._providers.get(n)]
 
-        def _probe(n):
-            return self._episode_list(n, anime_id, category)
+        def _probe(n, cancel_event):
+            return self._episode_list(n, anime_id, category, abort_event=cancel_event)
 
         results_map = self._parallel_probe_detail(names, _probe, chosen=provider)
 
@@ -959,6 +979,11 @@ class JSApi:
         """Probe providers in parallel. Every future is bounded by
         ``_PROVIDER_TIMEOUT``; the chosen provider (if any) gets the full
         ``_CHOSEN_PROVIDER_TIMEOUT`` allowance for slow browser-backed scrapers.
+
+        ``fn`` is called as ``fn(provider_name, cancel_event)`` so each probe
+        can abort its (still queued) browser jobs the moment the chosen
+        provider wins or the probe is finished — leftover background jobs must
+        never keep occupying the shared browser worker.
         """
         names = [n for n in names if n]
         if not names:
@@ -968,10 +993,11 @@ class JSApi:
         # priority order) may keep running for the longer browser-backed
         # allowance — the UI is waiting on its full episode list anyway.
         default_chosen = chosen or names[0]
+        abort_event = threading.Event()
         ex = ThreadPoolExecutor(max_workers=min(len(names), 6))
         outcomes: Dict[str, Any] = {}
         try:
-            futs = {ex.submit(fn, n): n for n in names}
+            futs = {ex.submit(fn, n, abort_event): n for n in names}
             done, pending = wait(list(futs), timeout=_PROVIDER_TIMEOUT)
             for fut in done:
                 n = futs[fut]
@@ -991,11 +1017,14 @@ class JSApi:
                 except Exception:
                     outcomes[default_chosen] = []
 
+            # The chosen probe is done (or gave up): stop every other
+            # still-running probe from submitting more browser work.
+            abort_event.set()
             for n in names:
                 if n not in outcomes:
                     outcomes[n] = []
         finally:
-            ex.shutdown(wait=False)
+            ex.shutdown(wait=False, cancel_futures=True)
         return outcomes
 
     def _provider_anime_id(self, name: str, anime_id: str, category: str = "sub") -> Optional[str]:
@@ -1144,7 +1173,7 @@ class JSApi:
             self._cache_put(self._hit_eps_cache, cache_key, count, 128)
         return count
 
-    def _episode_list(self, name, anime_id, category):
+    def _episode_list(self, name, anime_id, category, abort_event=None):
         """Fetch + normalize the episode list for one provider, LRU-cached.
 
         Non-miruro providers resolve their id first via a CLI-style title
@@ -1167,10 +1196,15 @@ class JSApi:
         with self._lock:
             items = self._raw_eps_cache.get(raw_key)
         if items is None:
+            if abort_event is not None and abort_event.is_set():
+                return []
             try:
                 if hasattr(scraper, "preferred_category"):
                     scraper.preferred_category = category
-                items = scraper.get_episodes(provider_anime_id) or []
+                items = _call_maybe_cancel(
+                    scraper, "get_episodes", provider_anime_id,
+                    abort_event=abort_event,
+                ) or []
             except Exception:
                 items = []
             if not items:
@@ -1394,7 +1428,12 @@ class JSApi:
             return cache_pick
 
         names = [n for n in pm.available_providers if pm._providers.get(n)]
-        results_map = self._parallel_probe_detail(names, lambda n: self._episode_list(n, anime_id, category))
+        results_map = self._parallel_probe_detail(
+            names,
+            lambda n, cancel_event: self._episode_list(
+                n, anime_id, category, abort_event=cancel_event
+            ),
+        )
         for name in names:
             eps = results_map.get(name) or []
             if eps:
@@ -1663,7 +1702,7 @@ class JSApi:
         if category == ARABIC_CATEGORY:
             return self._resolve_arabic_stream(anime_id, ep_num, resolution)
 
-        def _chosen():
+        def _chosen(abort_event):
             """Episode-list + get_stream_url for the explicit provider."""
             if not provider:
                 return None
@@ -1671,9 +1710,12 @@ class JSApi:
                 scraper = pm._providers.get(provider)
                 if scraper is None:
                     return None
+                if abort_event is not None and abort_event.is_set():
+                    return None
                 if hasattr(scraper, "preferred_category"):
                     scraper.preferred_category = category
-                eps = self._episode_list(provider, anime_id, category)
+                eps = self._episode_list(provider, anime_id, category,
+                                         abort_event=abort_event)
                 if not eps:
                     self._log_gui_resolve_error(
                         provider, ep_num, None, {"episodes": []},
@@ -1683,8 +1725,13 @@ class JSApi:
                 target = str(int(float(ep_num)))
                 for ep in eps or []:
                     if str(int(float(ep["episode_num"]))) == target:
+                        if abort_event is not None and abort_event.is_set():
+                            return None
                         try:
-                            result = scraper.get_stream_url(ep["id"])
+                            result = _call_maybe_cancel(
+                                scraper, "get_stream_url", ep["id"],
+                                abort_event=abort_event,
+                            )
                         except Exception as exc:
                             self._log_gui_resolve_error(
                                 provider, ep_num, exc, None,
@@ -1704,7 +1751,7 @@ class JSApi:
                                             note="episode-list/resolver error")
                 return None
 
-        def _auto():
+        def _auto(abort_event):
             """Global fallback through the manager chain (CLI-style title search)."""
             import asyncio
             try:
@@ -1716,6 +1763,7 @@ class JSApi:
                         language="english",
                         provider="auto",
                         quiet=True,
+                        abort_event=abort_event,
                     )
                 )
                 if self._is_usable_stream({"stream_url": url, "headers": headers}):
@@ -1730,11 +1778,18 @@ class JSApi:
             return None
 
         def _run_bounded(fn, label):
-            """Run ``fn`` on one worker, bounded by _CHOSEN_PROVIDER_TIMEOUT."""
+            """Run ``fn(abort_event)`` on one worker, bounded by
+            _CHOSEN_PROVIDER_TIMEOUT.
+
+            An abort event is set the moment the stage finishes OR times out,
+            so any leftover work (the abandoned auto chain, a stuck browser
+            job) stops submitting new jobs to the shared browser worker.
+            """
             from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FutTimeout
+            abort_event = threading.Event()
             ex = ThreadPoolExecutor(max_workers=1)
             try:
-                fut = ex.submit(fn)
+                fut = ex.submit(fn, abort_event)
                 try:
                     with timed(label):
                         return fut.result(timeout=_CHOSEN_PROVIDER_TIMEOUT)
@@ -1743,6 +1798,7 @@ class JSApi:
                                      f"{_CHOSEN_PROVIDER_TIMEOUT}s — continuing\n")
                     return None
             finally:
+                abort_event.set()
                 ex.shutdown(wait=False)
 
         # Direct execution: a specific provider is resolved ALONE (no concurrent

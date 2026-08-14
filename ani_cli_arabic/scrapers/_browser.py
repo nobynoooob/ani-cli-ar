@@ -28,6 +28,11 @@ _LAUNCH_ARGS = [
     "--disable-blink-features=AutomationControlled",
 ]
 _LAUNCH_TIMEOUT = 60.0
+# How long a job may wait in the queue for its turn on the single worker
+# thread before the caller gives up. This is separate from the *execution*
+# budget: once the worker starts the job, the caller gets the full ``timeout``
+# (see ``_PlaywrightRuntime.run``).
+_QUEUE_WAIT_TIMEOUT = 20.0
 _DEFAULT_JOB_TIMEOUT = 30.0
 
 _STOP = object()
@@ -72,7 +77,14 @@ class _PlaywrightRuntime:
             job = self._queue.get()
             if job is _STOP:
                 break
-            fn, res_q = job
+            fn, res_q, started, cancel_event = job
+            if cancel_event is not None and cancel_event.is_set():
+                # Aborted while still queued: skip execution entirely so the
+                # worker slot is freed instead of wasting it on dead work.
+                started.set()
+                res_q.put(("ok", None))
+                continue
+            started.set()
             try:
                 if self._browser is None or not self._browser.is_connected():
                     res_q.put(("err", RuntimeError(
@@ -82,19 +94,35 @@ class _PlaywrightRuntime:
             except Exception as exc:
                 res_q.put(("err", exc))
 
-    def run(self, fn: Callable, timeout: float = _DEFAULT_JOB_TIMEOUT):
+    def run(
+        self,
+        fn: Callable,
+        timeout: float = _DEFAULT_JOB_TIMEOUT,
+        cancel_event: Optional[threading.Event] = None,
+    ):
         """Execute ``fn(browser)`` on the runtime thread and return its result.
 
-        Returns None if the browser failed to launch or the job exceeded
-        ``timeout``; raises the job's exception otherwise.
+        The ``timeout`` budget is measured from when the job *starts executing*
+        on the worker, not from submission — queue-wait time behind other jobs
+        does not consume the execution budget. ``cancel_event`` (when provided
+        and set) aborts a still-queued job before it runs.
+
+        Returns None if the browser failed to launch, the job never got a turn
+        within ``_QUEUE_WAIT_TIMEOUT``, or the job exceeded ``timeout``; raises
+        the job's exception otherwise.
         """
+        if cancel_event is not None and cancel_event.is_set():
+            return None
         self._launch_trigger.set()
         if not self._launched.wait(timeout=_LAUNCH_TIMEOUT):
             return None
         if self._launch_error:
             return None
         res_q: queue.Queue = queue.Queue(maxsize=1)
-        self._queue.put((fn, res_q))
+        started = threading.Event()
+        self._queue.put((fn, res_q, started, cancel_event))
+        if not started.wait(timeout=_QUEUE_WAIT_TIMEOUT):
+            return None
         try:
             kind, value = res_q.get(timeout=timeout)
         except queue.Empty:
@@ -123,15 +151,20 @@ def _get_runtime() -> _PlaywrightRuntime:
     return _runtime
 
 
-def browser_run(fn: Callable, timeout: float = _DEFAULT_JOB_TIMEOUT):
+def browser_run(
+    fn: Callable,
+    timeout: float = _DEFAULT_JOB_TIMEOUT,
+    cancel_event: Optional[threading.Event] = None,
+):
     """Run ``fn(browser)`` on the shared lazy browser.
 
     ``fn`` receives the shared ``browser`` instance and is responsible for
     creating/closing its own context + page (contexts are cheap; the browser
     launch is the expensive part we reuse). Use :func:`new_page_job` for the
-    common single-page pattern.
+    common single-page pattern. ``cancel_event`` (optional) aborts the job
+    before it starts if set while it is still queued.
     """
-    return _get_runtime().run(fn, timeout=timeout)
+    return _get_runtime().run(fn, timeout=timeout, cancel_event=cancel_event)
 
 
 def new_page_job(
@@ -172,6 +205,7 @@ def browser_page(
     viewport: Optional[dict] = None,
     init_script: Optional[str] = None,
     timeout: float = _DEFAULT_JOB_TIMEOUT,
+    cancel_event: Optional[threading.Event] = None,
 ):
     """Run ``fn(page)`` on a fresh context over the shared browser.
 
@@ -181,4 +215,5 @@ def browser_page(
         new_page_job(fn, user_agent=user_agent, viewport=viewport,
                      init_script=init_script),
         timeout=timeout,
+        cancel_event=cancel_event,
     )

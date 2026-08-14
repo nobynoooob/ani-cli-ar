@@ -330,7 +330,9 @@ class AniThemeScraper(BaseScraper):
                 continue
         return out
 
-    def get_stream_url(self, episode_id: str) -> Dict:
+    def get_stream_url(self, episode_id: str, cancel_event=None) -> Dict:
+        if cancel_event is not None and cancel_event.is_set():
+            return {"stream_url": None, "headers": {}}
         parts = episode_id.split("/", 1)
         show_id = parts[0]
         ep_str = parts[1] if len(parts) > 1 else "1"
@@ -397,7 +399,7 @@ class AniThemeScraper(BaseScraper):
 
         # Probe the embed hosters in parallel (bounded ~3s) so slow/CF-gated
         # embeds can never serialize the resolution; the fastest winner wins.
-        url = embeds.probe_embeds(embeds_srcs, referer=REFERRER)
+        url = embeds.probe_embeds(embeds_srcs, referer=REFERRER, cancel_event=cancel_event)
         if url:
             return {
                 "stream_url": url,

@@ -86,7 +86,7 @@ class MkissaScraper(BaseScraper):
             for e in eps
         ]
 
-    def get_stream_url(self, episode_id: str) -> Dict:
+    def get_stream_url(self, episode_id: str, cancel_event=None) -> Dict:
         # mkissa.to and allanime share the same GraphQL backend (api.mkissa.net)
         # and anime ``_id`` values, so reuse allanime's verified client-crypto
         # handshake as the primary extraction path. The Turnstile-protected
@@ -94,23 +94,27 @@ class MkissaScraper(BaseScraper):
         # gated on most networks, so it rarely produces a stream).
         try:
             from .allanime import AniThemeScraper
-            stream = AniThemeScraper().get_stream_url(episode_id)
+            stream = AniThemeScraper().get_stream_url(episode_id, cancel_event=cancel_event)
             if stream and stream.get("stream_url"):
                 return stream
         except Exception:
             pass
 
+        if cancel_event is not None and cancel_event.is_set():
+            return {"stream_url": None, "headers": {}}
         parts = episode_id.split("/", 1)
         show_id = parts[0]
         ep_no = parts[1] if len(parts) > 1 else "1"
-        stream = self._try_playwright_extract(show_id, ep_no)
+        stream = self._try_playwright_extract(show_id, ep_no, cancel_event=cancel_event)
         if stream and stream.get("stream_url"):
             return stream
 
         return {"stream_url": None, "headers": {}}
 
-    def _try_playwright_extract(self, show_id: str, ep_no: str) -> Optional[Dict]:
+    def _try_playwright_extract(self, show_id: str, ep_no: str, cancel_event=None) -> Optional[Dict]:
         # Uses the shared lazy browser runtime (browser launched once, reused).
+        if cancel_event is not None and cancel_event.is_set():
+            return None
         from ._browser import browser_page
         from ._http_log import timed
 
@@ -158,6 +162,7 @@ class MkissaScraper(BaseScraper):
                         "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})"
                     ),
                     timeout=_PLAYWRIGHT_TIMEOUT + 10.0,
+                    cancel_event=cancel_event,
                 )
         except Exception:
             url = None

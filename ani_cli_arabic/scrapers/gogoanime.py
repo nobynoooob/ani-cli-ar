@@ -65,9 +65,9 @@ def _extract_embeds(html: str) -> list:
     return embeds
 
 
-def _resolve_vidwish(embed_url: str) -> str:
+def _resolve_vidwish(embed_url: str, cancel_event=None) -> str:
     """Resolve an embed (kwik/vidstreaming/gogo-server) to a playable URL."""
-    result = resolve_embed(embed_url, referer=BASE_URL + "/")
+    result = resolve_embed(embed_url, referer=BASE_URL + "/", cancel_event=cancel_event)
     return result.get("stream_url") or ""
 
 
@@ -137,7 +137,7 @@ class GogoAnimeScraper(BaseScraper):
             for n in sorted(nums)
         ]
 
-    def get_stream_url(self, episode_id: str) -> Dict:
+    def get_stream_url(self, episode_id: str, cancel_event=None) -> Dict:
         # episode_id is a full URL: {scheme}://{host}/{show_id}/{episode_num}
         from urllib.parse import urlparse
         try:
@@ -162,7 +162,11 @@ class GogoAnimeScraper(BaseScraper):
         embed_urls = _extract_embeds(resp.text)
         # Probe all embeds in parallel; the first playable one wins so slow
         # kwik/CF-gated hosters can't serialize the resolution.
-        video = probe_embeds(embed_urls, resolver=_resolve_vidwish)
+        video = probe_embeds(
+            embed_urls,
+            resolver=lambda u: _resolve_vidwish(u, cancel_event=cancel_event),
+            cancel_event=cancel_event,
+        )
         if video:
             return {
                 "stream_url": video,

@@ -124,11 +124,16 @@ class MiruroScraper(BaseScraper):
                 time.sleep(_REQUEST_INTERVAL - elapsed)
             cls._last_request_time = time.time()
 
-    def _pipe_fetch(self, payload: dict) -> Optional[dict]:
+    def _pipe_fetch(self, payload: dict, cancel_event=None) -> Optional[dict]:
         # Uses the shared lazy browser runtime: the headless Chromium launches
         # ONCE and is reused across pipe calls (episodes fetch, sources fetch,
         # pipe search) instead of a fresh browser per call. Fast HTTP scrapers
         # never touch this code path.
+        #
+        # Retries happen ONLY on retryable HTTP statuses (429/5xx). A job
+        # timeout or exception is NOT retried: with a shared worker, a retry
+        # would just enqueue another job behind the still-running (abandoned)
+        # one and back up the queue for every other caller.
         from ._browser import browser_page
         from ._http_log import timed
 
@@ -157,15 +162,16 @@ class MiruroScraper(BaseScraper):
             try:
                 with timed("miruro:pipe:job"):
                     result = browser_page(
-                        _fetch, user_agent=USER_AGENT, timeout=25.0
+                        _fetch, user_agent=USER_AGENT, timeout=30.0,
+                        cancel_event=cancel_event,
                     )
             except Exception as e:
                 last_error = repr(e)
-                continue
+                break
 
             if result is None:
                 last_error = "job timed out"
-                continue
+                break
             status = result.get("status")
             if status in _RETRYABLE_STATUS:
                 last_error = f"status {status}"
@@ -180,12 +186,14 @@ class MiruroScraper(BaseScraper):
                            note=f"last_error={last_error[:300]}")
         return None
 
-    def search(self, query: str) -> List[Dict]:
+    def search(self, query: str, cancel_event=None) -> List[Dict]:
         results = self._search_anilist(query)
         if results:
             return results
+        if cancel_event is not None and cancel_event.is_set():
+            return []
         sys.stderr.write("[!] AniList search unavailable, falling back to miruro pipe search.\n")
-        return self._search_pipe(query)
+        return self._search_pipe(query, cancel_event=cancel_event)
 
     def _search_anilist(self, query: str) -> List[Dict]:
         try:
@@ -210,7 +218,7 @@ class MiruroScraper(BaseScraper):
         except Exception:
             return []
 
-    def _search_pipe(self, query: str) -> List[Dict]:
+    def _search_pipe(self, query: str, cancel_event=None) -> List[Dict]:
         try:
             payload = {
                 "path": "search",
@@ -219,7 +227,7 @@ class MiruroScraper(BaseScraper):
                 "body": None,
                 "version": "0.1.0",
             }
-            data = self._pipe_fetch(payload)
+            data = self._pipe_fetch(payload, cancel_event=cancel_event)
             if not isinstance(data, list):
                 return []
             scored = []
@@ -245,7 +253,7 @@ class MiruroScraper(BaseScraper):
         except Exception:
             return []
 
-    def get_episodes(self, anime_id: str) -> List[Dict]:
+    def get_episodes(self, anime_id: str, cancel_event=None) -> List[Dict]:
         try:
             anilist_id = int(anime_id)
         except (ValueError, TypeError):
@@ -258,7 +266,7 @@ class MiruroScraper(BaseScraper):
                 "body": None,
                 "version": "0.1.0",
             }
-            data = self._pipe_fetch(payload)
+            data = self._pipe_fetch(payload, cancel_event=cancel_event)
             if not data:
                 return []
             providers = data.get("providers", {})
@@ -307,7 +315,7 @@ class MiruroScraper(BaseScraper):
         except Exception:
             return []
 
-    def get_stream_url(self, episode_id: str) -> Dict:
+    def get_stream_url(self, episode_id: str, cancel_event=None) -> Dict:
         try:
             meta = json.loads(episode_id)
             raw_eid = meta.get("eid", "")
@@ -331,7 +339,7 @@ class MiruroScraper(BaseScraper):
                 "body": None,
                 "version": "0.1.0",
             }
-            data = self._pipe_fetch(payload)
+            data = self._pipe_fetch(payload, cancel_event=cancel_event)
             if not data:
                 return {"stream_url": None, "headers": {}}
             streams = data.get("streams", [])

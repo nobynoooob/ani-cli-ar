@@ -94,7 +94,7 @@ class HiAnimeScraper(BaseScraper):
             pass
         return self._base_url
 
-    def _fetch_ajax(self, path: str) -> str:
+    def _fetch_ajax(self, path: str, cancel_event=None) -> str:
         """Fetch a HiAnime ajax endpoint, via browser when Cloudflare blocks HTTP."""
         self._base_url = self._pick_mirror(path)
         url = f"{self._base_url}{path}"
@@ -105,7 +105,11 @@ class HiAnimeScraper(BaseScraper):
                 return r.text
         except Exception:
             pass
-        # Browser fallback (CF challenge) via the shared lazy runtime.
+        # Browser fallback (CF challenge) via the shared lazy runtime. Skip it
+        # entirely when the resolution has been aborted so this slow job never
+        # occupies the shared browser worker.
+        if cancel_event is not None and cancel_event.is_set():
+            return ""
         from ._browser import browser_page
         from ._http_log import timed
 
@@ -121,7 +125,8 @@ class HiAnimeScraper(BaseScraper):
         try:
             with timed("hianime:browser:fetch"):
                 data = browser_page(
-                    _work, user_agent=USER_AGENT, timeout=15.0
+                    _work, user_agent=USER_AGENT, timeout=15.0,
+                    cancel_event=cancel_event,
                 )
         except Exception:
             data = None
@@ -129,9 +134,9 @@ class HiAnimeScraper(BaseScraper):
             return data.get("t", "")
         return ""
 
-    def search(self, query: str) -> List[Dict]:
+    def search(self, query: str, cancel_event=None) -> List[Dict]:
         import urllib.parse
-        html = self._fetch_ajax(f"/ajax/search/suggest?keyword={urllib.parse.quote(query)}")
+        html = self._fetch_ajax(f"/ajax/search/suggest?keyword={urllib.parse.quote(query)}", cancel_event=cancel_event)
         # The ajax response is a `{html: ...}` JSON containing card anchors.
         m = re.search(r'\{\s*"html"\s*:\s*"(.*)', html, re.DOTALL)
         raw = None
@@ -153,8 +158,8 @@ class HiAnimeScraper(BaseScraper):
                 results.append({"title": title.strip(), "id": aid})
         return results
 
-    def get_episodes(self, anime_id: str) -> List[Dict]:
-        html = self._fetch_ajax(f"/ajax/v2/episode/list/{anime_id}")
+    def get_episodes(self, anime_id: str, cancel_event=None) -> List[Dict]:
+        html = self._fetch_ajax(f"/ajax/v2/episode/list/{anime_id}", cancel_event=cancel_event)
         try:
             import json
             data = json.loads(html)
@@ -167,9 +172,9 @@ class HiAnimeScraper(BaseScraper):
             out.append({"episode_num": len(out) + 1, "id": eid})
         return out
 
-    def get_stream_url(self, episode_id: str) -> Dict:
+    def get_stream_url(self, episode_id: str, cancel_event=None) -> Dict:
         # episode_id is the episode data-id from the ajax list.
-        server_html = self._fetch_ajax(f"/ajax/v2/episode/servers?episodeId={episode_id}")
+        server_html = self._fetch_ajax(f"/ajax/v2/episode/servers?episodeId={episode_id}", cancel_event=cancel_event)
         try:
             import json
             data = json.loads(server_html)
@@ -188,7 +193,7 @@ class HiAnimeScraper(BaseScraper):
         if not sid:
             return {"stream_url": None, "headers": {}}
 
-        srcs = self._fetch_ajax(f"/ajax/v2/episode/sources?id={sid}")
+        srcs = self._fetch_ajax(f"/ajax/v2/episode/sources?id={sid}", cancel_event=cancel_event)
         try:
             import json
             data = json.loads(srcs)

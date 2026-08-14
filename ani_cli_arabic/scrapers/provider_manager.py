@@ -45,6 +45,26 @@ _PROVIDER_ORDER = {
 _PROVIDER_TIMEOUT = 30.0
 
 
+def _supports_kwarg(fn, name: str) -> bool:
+    """True when ``fn`` accepts a keyword argument ``name``."""
+    try:
+        import inspect
+        return name in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def _call_maybe_cancel(scraper, method: str, *args, abort_event):
+    """Call ``scraper.method(*args)``, forwarding the abort event to the
+    scraper when it supports the ``cancel_event`` keyword."""
+    fn = getattr(scraper, method, None)
+    if fn is None:
+        return None
+    if abort_event is not None and _supports_kwarg(fn, "cancel_event"):
+        return fn(*args, cancel_event=abort_event)
+    return fn(*args)
+
+
 def get_provider_list(language: str = "english") -> List[str]:
     lang_clean = (language or "english").lower()
     return list(_PROVIDER_ORDER.get(lang_clean, ENGLISH_PROVIDERS))
@@ -106,6 +126,7 @@ class ProviderManager:
         language: str = "english",
         provider: str = "auto",
         quiet: bool = False,
+        abort_event=None,
     ) -> Tuple[Optional[str], Dict, Optional[str]]:
         lang_clean = (language or "english").lower()
         provider_clean = (provider or "auto").lower()
@@ -118,6 +139,9 @@ class ProviderManager:
                 sys.stderr.write(msg)
 
         for name, scraper in self._get_ordered_providers(lang_clean, provider_clean):
+            if abort_event is not None and abort_event.is_set():
+                _log("[✗] resolution aborted (background chain cancelled).\n")
+                break
             _browser = " (browser)" if getattr(scraper, "requires_browser", False) else ""
             _log(f"[?] Attempting provider: {name}{_browser}...\n")
             context = {
@@ -131,7 +155,8 @@ class ProviderManager:
                 with timed(f"provider:{name}:total"):
                     result = await asyncio.wait_for(
                         asyncio.to_thread(
-                            self._try_provider, scraper, anime_title, episode_num, mode
+                            self._try_provider, scraper, anime_title, episode_num,
+                            mode, abort_event,
                         ),
                         timeout=_PROVIDER_TIMEOUT,
                     )
@@ -152,6 +177,11 @@ class ProviderManager:
                 ProviderManager._log_debug(
                     name, f"unexpected error: {type(exc).__name__}: {exc}"
                 )
+
+        if abort_event is not None and abort_event.is_set():
+            # Aborted (e.g. GUI gave up on this stage): exit silently without
+            # reporting a failure — this is not a provider error.
+            return None, {}, None
 
         if lang_clean == "english":
             _log(
@@ -186,7 +216,8 @@ class ProviderManager:
 
     @staticmethod
     def _try_provider(
-        scraper: BaseScraper, anime_title: str, episode_num, mode: str = "sub"
+        scraper: BaseScraper, anime_title: str, episode_num, mode: str = "sub",
+        abort_event=None,
     ) -> Optional[Tuple[str, Dict]]:
         mode_clean = (mode or "sub").lower()
         if mode_clean not in ("sub", "dub"):
@@ -200,9 +231,13 @@ class ProviderManager:
             "translation_mode": mode_clean,
         }
 
+        if abort_event is not None and abort_event.is_set():
+            return None
+
         try:
             with timed(f"provider:{scraper.name}:search"):
-                results = scraper.search(anime_title)
+                results = _call_maybe_cancel(scraper, "search", anime_title,
+                                             abort_event=abort_event)
         except Exception as exc:
             ProviderManager._report_error("Scraper search failed", context,
                                           exc_info=sys.exc_info())
@@ -218,11 +253,15 @@ class ProviderManager:
 
         anime_id = results[0]["id"]
 
+        if abort_event is not None and abort_event.is_set():
+            return None
+
         try:
             if hasattr(scraper, "preferred_category"):
                 scraper.preferred_category = mode_clean
             with timed(f"provider:{scraper.name}:get_episodes"):
-                eps = scraper.get_episodes(anime_id)
+                eps = _call_maybe_cancel(scraper, "get_episodes", anime_id,
+                                         abort_event=abort_event)
         except Exception as exc:
             ProviderManager._report_error("Scraper episode list failed",
                                           dict(context, anime_id=str(anime_id)),
@@ -257,9 +296,13 @@ class ProviderManager:
             except (json.JSONDecodeError, TypeError):
                 pass
 
+        if abort_event is not None and abort_event.is_set():
+            return None
+
         try:
             with timed(f"provider:{scraper.name}:get_stream_url"):
-                stream = scraper.get_stream_url(ep_id)
+                stream = _call_maybe_cancel(scraper, "get_stream_url", ep_id,
+                                            abort_event=abort_event)
         except Exception as exc:
             ProviderManager._report_error("Scraper stream resolution failed",
                                           dict(context, episode_id=str(ep_id)),
