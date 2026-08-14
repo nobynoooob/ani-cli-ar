@@ -260,6 +260,13 @@ def _excludes(target: str, extra: list) -> list:
     base = [
         "IPython", "jupyter", "notebook", "matplotlib", "scipy", "pandas",
         "pytest",
+        # Heavy deps pulled in only by libs we never import:
+        #   * pyiceberg (Apache Iceberg table lib) drags in zstandard (~22 MB)
+        #   * uvloop is an optional (try/except) asyncio accelerator used by
+        #     websockets/anyio; excluding it just falls back to asyncio
+        "pyiceberg", "zstandard", "uvloop",
+        # stdlib / tooling bloat never needed at runtime
+        "test", "pydoc_data", "lib2to3", "setuptools", "pip", "wheel",
     ]
     if target == "gui":
         # `email`/`numpy`/`PIL` must NOT be excluded: importing the package
@@ -290,6 +297,116 @@ def _cli_entry_script() -> "Path | None":
     (it reconfigures the console, then dispatches to ``ani_cli_arabic.app``)."""
     entry = ROOT / "main.py"
     return entry if entry.exists() else None
+
+
+def _write_spec(spec_path: Path, *, entry: Path, exe_name: str, is_gui: bool,
+                onedir: bool, strip: bool, icon: "Path | None",
+                datas: list, binaries: list, hiddenimports: list,
+                collect_submodules: list, collect_all: list,
+                excludes: list, runtime_hooks: list) -> Path:
+    """Generate the PyInstaller spec used for the build.
+
+    A spec (rather than raw CLI flags) is required because the CLI does not
+    expose two settings that matter for binary size:
+
+    * ``hooksconfig["gi"]`` — the GTK hook otherwise collects *every* icon
+      theme and window theme under ``/usr/share/icons`` + ``/usr/share/themes``
+      (on typical systems that is 1+ GB of cursor PNGs). Restricting to the
+      ``Adwaita`` icon/theme and English translations keeps GTK/webview
+      rendering fully intact while dropping hundreds of MB from the payload.
+    * ``strip`` — removes debug symbols from the frozen executable and all
+      bundled shared libraries (POSIX only; no-op on Windows).
+
+    ``upx`` is left disabled because UPX rarely exists in the build
+    environment (PyInstaller silently skips it when absent) and, when present,
+    has historically corrupted some bundled shared libraries.
+
+    The remainder mirrors exactly what the CLI equivalent would generate.
+    """
+    lines: list = []
+    a = lines.append
+    a("# -*- mode: python ; coding: utf-8 -*-")
+    a("from PyInstaller.utils.hooks import collect_submodules")
+    a("from PyInstaller.utils.hooks import collect_all")
+    a("")
+    a(f"datas = {datas!r}")
+    a(f"binaries = {binaries!r}")
+    a(f"hiddenimports = {hiddenimports!r}")
+    a("")
+    for mod in collect_submodules:
+        a(f"hiddenimports += collect_submodules({mod!r})")
+    for mod in collect_all:
+        a(f"tmp_ret = collect_all({mod!r})")
+        a("datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]")
+    a("")
+    a("a = Analysis(")
+    a(f"    [{str(entry)!r}],")
+    a("    pathex=[],")
+    a("    binaries=binaries,")
+    a("    datas=datas,")
+    a("    hiddenimports=hiddenimports,")
+    a("    hookspath=[],")
+    a("    hooksconfig={'gi': {'icons': ['Adwaita'], 'themes': ['Adwaita'], 'languages': ['en']}},")
+    a(f"    runtime_hooks={runtime_hooks!r},")
+    a(f"    excludes={excludes!r},")
+    a("    noarchive=False,")
+    a("    optimize=0,")
+    a(")")
+    a("pyz = PYZ(a.pure)")
+    a("")
+    if onedir:
+        a("exe = EXE(")
+        a("    pyz,")
+        a("    a.scripts,")
+        a("    [],")
+        a("    exclude_binaries=True,")
+        a(f"    name={exe_name!r},")
+        a("    debug=False,")
+        a("    bootloader_ignore_signals=False,")
+        a(f"    strip={strip},")
+        a("    upx=False,")
+        a(f"    console={not is_gui},")
+        a("    disable_windowed_traceback=False,")
+        a("    argv_emulation=False,")
+        a("    target_arch=None,")
+        a("    codesign_identity=None,")
+        a("    entitlements_file=None,")
+        a(f"    icon={[str(icon)] if icon else []},")
+        a(")")
+        a("coll = COLLECT(")
+        a("    exe,")
+        a("    a.binaries,")
+        a("    a.datas,")
+        a(f"    strip={strip},")
+        a("    upx=False,")
+        a("    upx_exclude=[],")
+        a(f"    name={exe_name!r},")
+        a(")")
+    else:
+        a("exe = EXE(")
+        a("    pyz,")
+        a("    a.scripts,")
+        a("    a.binaries,")
+        a("    a.datas,")
+        a("    [],")
+        a(f"    name={exe_name!r},")
+        a("    debug=False,")
+        a("    bootloader_ignore_signals=False,")
+        a(f"    strip={strip},")
+        a("    upx=False,")
+        a("    upx_exclude=[],")
+        a("    runtime_tmpdir=None,")
+        a(f"    console={not is_gui},")
+        a("    disable_windowed_traceback=False,")
+        a("    argv_emulation=False,")
+        a("    target_arch=None,")
+        a("    codesign_identity=None,")
+        a("    entitlements_file=None,")
+        a(f"    icon={[str(icon)] if icon else []},")
+        a(")")
+    a("")
+    spec_path.write_text("\n".join(lines), encoding="utf-8")
+    return spec_path
 
 
 def build():
@@ -326,6 +443,10 @@ def build():
                         help="Also produce dist/<exe-name>.zip")
     parser.add_argument("--skip-install", action="store_true",
                         help="Fail instead of auto-installing PyInstaller")
+    parser.add_argument("--no-strip", action="store_true",
+                        help="Do NOT strip debug symbols from the executable and "
+                             "bundled shared libraries (strip is on by default "
+                             "on POSIX; it is a no-op on Windows)")
     args = parser.parse_args()
 
     print("=" * 60)
@@ -376,15 +497,14 @@ def build():
         if cand.exists():
             icon = cand
 
-    # PyInstaller --add-data/--add-binary separator differs between OS families.
-    sep = ";" if os.name == "nt" else ":"
+    # PyInstaller data/binary tuples (source, destination).
     add_data = []
     if is_gui:
         # Use os.fspath() so Windows drive-letter/backslash paths are passed to
         # PyInstaller verbatim (no accidental forward-slash rewrites or doubled
         # backslashes in the spec we later attach to the bundle).
         ui_dir_str = os.fspath(ui_dir)
-        add_data.append(f"{ui_dir_str}{sep}{PKG}/ui")
+        add_data.append((ui_dir_str, f"{PKG}/ui"))
     add_binaries = []
 
     # ----- mpv bundling -----------------------------------------------------
@@ -396,7 +516,7 @@ def build():
     elif args.bundle_mpv:
         mpv_dir = _find_mpv_dir()
     if mpv_dir:
-        add_binaries.append(f"{os.fspath(mpv_dir)}{sep}{MPV_DEST}")
+        add_binaries.append((os.fspath(mpv_dir), MPV_DEST))
         print(f"[*] Bundling mpv from: {mpv_dir}")
 
     # ----- Playwright Chromium bundling -------------------------------------
@@ -408,48 +528,40 @@ def build():
     elif args.bundle_browser:
         browser_dir = _find_browser_dir()
     if browser_dir:
-        add_data.append(f"{os.fspath(browser_dir)}{sep}{BROWSER_DEST}")
-        hook = _create_browser_hook()
+        add_data.append((os.fspath(browser_dir), BROWSER_DEST))
+        browser_hook = _create_browser_hook()
         print(f"[*] Bundling Playwright browsers from: {browser_dir}")
 
-    cmd = [
-        sys.executable, "-m", "PyInstaller",
-        str(entry),
-        "--name", exe_name,
-        "--onedir" if args.onedir else "--onefile",
-        "--clean",
-        "--noconfirm",
-        "--distpath", str(ROOT / "dist"),
-        "--workpath", str(ROOT / "build" / "pyinstaller"),
-        "--specpath", str(ROOT / "build"),
-    ]
+    # Strip debug symbols from the frozen executable and every bundled shared
+    # library (POSIX only — PyInstaller has no strip support on Windows).
+    strip = not args.no_strip and os.name != "nt"
+    spec = _write_spec(
+        ROOT / "build" / f"{exe_name}.spec",
+        entry=entry,
+        exe_name=exe_name,
+        is_gui=is_gui,
+        onedir=args.onedir,
+        strip=strip,
+        icon=icon,
+        datas=add_data,
+        binaries=add_binaries,
+        hiddenimports=_hidden_imports(args.target),
+        collect_submodules=_collect_submodules(args.target),
+        collect_all=_collect_all(),
+        excludes=_excludes(args.target, args.exclude_module),
+        runtime_hooks=(
+            [str(browser_hook)] if browser_dir else []
+        ),
+    )
 
-    if is_gui:
-        # The GUI is a windowed app; the CLI must keep its console for the TUI.
-        cmd.append("--noconsole")
-
-    for data in add_data:
-        cmd += ["--add-data", data]
-    for binary in add_binaries:
-        cmd += ["--add-binary", binary]
-    if browser_dir:
-        cmd += ["--runtime-hook", str(ROOT / "build" / "_browsers_path_hook.py")]
-    for mod in _hidden_imports(args.target):
-        cmd += ["--hidden-import", mod]
-    for mod in _collect_submodules(args.target):
-        cmd += ["--collect-submodules", mod]
-    for mod in _collect_all():
-        cmd += ["--collect-all", mod]
-    for mod in _excludes(args.target, args.exclude_module):
-        cmd += ["--exclude-module", mod]
-    if icon:
-        cmd += ["--icon", str(icon)]
-
+    cmd = [sys.executable, "-m", "PyInstaller", "--clean", "--noconfirm", str(spec)]
     if not args.debug:
         cmd += ["--log-level", "ERROR"]
 
     exe_name_os = exe_name + (".exe" if os.name == "nt" else "")
     print(f"[*] Output: dist/{exe_name_os}")
+    if strip:
+        print("[*] Strip: enabled (removes debug symbols)")
     print("[*] Building...\n")
 
     result = subprocess.run(cmd, cwd=str(ROOT))
