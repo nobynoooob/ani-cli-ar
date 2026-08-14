@@ -155,20 +155,42 @@ jobs:
       - name: Build GUI executable (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        # Slim build: no --bundle-browser (Chromium is downloaded on first use
-        # via ensure_playwright_chromium) and heavy unused modules are excluded.
-        # numpy/PIL/email are kept: importing the package pulls in app -> ui.py,
-        # which imports numpy + PIL at module load.
+        # Slim onedir build: no --bundle-browser (Chromium is downloaded on first
+        # use via ensure_playwright_chromium) and heavy unused modules are
+        # excluded. numpy/PIL/email are kept: importing the package pulls in
+        # app -> ui.py, which imports numpy + PIL at module load.
+        # --onedir produces a standalone dist/AniNova/ folder (exe + DLLs + mpv)
+        # that is zipped into a portable release below.
         run: |
-          python build_desktop.py --target gui --bundle-mpv `
+          python build_desktop.py --target gui --onedir --bundle-mpv `
             --exclude-module tkinter `
             --exclude-module unittest `
             --exclude-module pydoc `
             --exclude-module PyQt6 `
             --exclude-module PySide6 `
             --exclude-module customtkinter `
-            --exe-name ani-cli-ar-gui-windows `
-            --zip
+            --exe-name AniNova
+
+      - name: Package Windows portable zip
+        if: runner.os == 'Windows'
+        shell: pwsh
+        # Compress the onedir folder into a single portable release asset. The
+        # version comes from the git tag (e.g. v1.9.7) so the file name is
+        # AniNova-v1.9.7-Windows-Portable.zip; on manual (workflow_dispatch)
+        # runs it falls back to the version baked into version.py.
+        run: |
+          $version = "${{ github.ref_name }}"
+          if ($version -notmatch '^v\d') {
+            $m = Select-String -Path "ani_cli_arabic/version.py" -Pattern '^__version__ = "([^"]+)"'
+            $version = if ($m) { "v" + $m.Matches[0].Groups[1].Value } else { "v1.9.7" }
+          }
+          Write-Host "Packaging portable zip for $version"
+          if (-not (Test-Path "dist/AniNova")) {
+            Write-Host "::error::dist/AniNova folder missing"
+            exit 1
+          }
+          Compress-Archive -Path "dist/AniNova" -DestinationPath "AniNova-$version-Windows-Portable.zip" -CompressionLevel Optimal -Force
+          Get-Item "AniNova-$version-Windows-Portable.zip" | Select-Object Name, @{N='SizeMB';E={[math]::Round($_.Length/1MB,1)}}
 
       - name: Build GUI executable (Linux)
         if: runner.os == 'Linux'
@@ -199,10 +221,9 @@ jobs:
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
-          name: ani-cli-ar-gui-windows
+          name: AniNova-windows-portable
           path: |
-            dist/ani-cli-ar-gui-windows.exe
-            dist/ani-cli-ar-gui-windows.zip
+            AniNova-*-Windows-Portable.zip
 
       - name: Upload GUI artifacts (Linux)
         if: runner.os == 'Linux'

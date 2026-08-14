@@ -297,6 +297,11 @@ def build():
     parser.add_argument("--target", choices=("gui", "cli"), default="gui",
                         help="Build the pywebview GUI (default) or the terminal "
                              "CLI (aggressively excludes GUI frameworks)")
+    parser.add_argument("--onedir", action="store_true",
+                        help="Build a standalone directory (PyInstaller --onedir) "
+                             "instead of a single-file executable (--onefile, "
+                             "the default). Useful for portable folder releases "
+                             "that get zipped.")
     parser.add_argument("--debug", action="store_true",
                         help="Show full PyInstaller output")
     parser.add_argument("--bundle-mpv", action="store_true",
@@ -411,7 +416,7 @@ def build():
         sys.executable, "-m", "PyInstaller",
         str(entry),
         "--name", exe_name,
-        "--onefile",
+        "--onedir" if args.onedir else "--onefile",
         "--clean",
         "--noconfirm",
         "--distpath", str(ROOT / "dist"),
@@ -451,11 +456,18 @@ def build():
     if result.returncode != 0:
         _err("PyInstaller build failed (re-run with --debug for details).")
 
-    exe = ROOT / "dist" / exe_name_os
-    if not exe.exists():
-        _err(f"Build reported success but {exe} was not found.")
-
-    size_mb = exe.stat().st_size / (1024 * 1024)
+    dist_dir = ROOT / "dist"
+    if args.onedir:
+        out_dir = dist_dir / exe_name
+        if not out_dir.is_dir():
+            _err(f"Build reported success but {out_dir} was not found.")
+        exe = out_dir / exe_name_os
+        size_mb = sum(p.stat().st_size for p in out_dir.rglob("*") if p.is_file()) / (1024 * 1024)
+    else:
+        exe = dist_dir / exe_name_os
+        if not exe.exists():
+            _err(f"Build reported success but {exe} was not found.")
+        size_mb = exe.stat().st_size / (1024 * 1024)
     print("\n" + "=" * 60)
     print(f"  BUILD SUCCESSFUL")
     print(f"  {exe}")
@@ -485,7 +497,12 @@ def build():
             "\n",
         )
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.write(exe, arcname=exe_name_os)
+            if args.onedir:
+                for p in out_dir.rglob("*"):
+                    if p.is_file():
+                        zf.write(p, arcname=os.path.join(exe_name, str(p.relative_to(out_dir))))
+            else:
+                zf.write(exe, arcname=exe_name_os)
             readme_name = "README.txt"
             zf.writestr(readme_name, readme)
         print(f"[*] Portable zip: {zip_path}")
