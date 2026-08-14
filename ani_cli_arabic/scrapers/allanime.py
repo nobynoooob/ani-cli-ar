@@ -260,6 +260,8 @@ def _decode_obfuscated(url: str) -> str:
 class AniThemeScraper(BaseScraper):
     """AllAnime GraphQL scraper with the client-crypto episode handshake."""
 
+    requires_browser = False
+
     @property
     def name(self) -> str:
         return "allanime"

@@ -35,6 +35,8 @@ _CLIENT = LoggingClient(
 
 class ApiScraper(BaseScraper):
 
+    requires_browser = False
+
     _cached_base = ""
     _cached_prov = ""
 

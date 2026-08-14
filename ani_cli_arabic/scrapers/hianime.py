@@ -51,6 +51,8 @@ def _extract_card_html(html: str, base: str) -> str:
 
 class HiAnimeScraper(BaseScraper):
 
+    requires_browser = True
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._base_url = BASE_URL
@@ -103,33 +105,28 @@ class HiAnimeScraper(BaseScraper):
                 return r.text
         except Exception:
             pass
-        # Browser fallback (CF challenge).
+        # Browser fallback (CF challenge) via the shared lazy runtime.
+        from ._browser import browser_page
+        from ._http_log import timed
+
+        def _work(page):
+            page.goto(self._base_url, wait_until="domcontentloaded", timeout=8000)
+            page.wait_for_timeout(1000)
+            return page.evaluate(
+                "async (u) => { const r = await fetch(u); return { s: r.status, t: await r.text() }; }",
+                url,
+                timeout=8000,
+            )
+
         try:
-            from playwright.sync_api import sync_playwright
-        except ImportError:
-            return ""
-        try:
-            from ..playwright_bootstrap import ensure_playwright_chromium
-            ensure_playwright_chromium()
-        except Exception:
-            pass
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
-            ctx = browser.new_context(user_agent=USER_AGENT)
-            page = ctx.new_page()
-            try:
-                page.goto(self._base_url, wait_until="domcontentloaded", timeout=8000)
-                page.wait_for_timeout(1000)
-                data = page.evaluate(
-                    "async (u) => { const r = await fetch(u); return { s: r.status, t: await r.text() }; }",
-                    url,
-                    timeout=8000,
+            with timed("hianime:browser:fetch"):
+                data = browser_page(
+                    _work, user_agent=USER_AGENT, timeout=15.0
                 )
-                if data and data.get("s") == 200:
-                    return data.get("t", "")
-            except Exception:
-                pass
-            browser.close()
+        except Exception:
+            data = None
+        if data and data.get("s") == 200:
+            return data.get("t", "")
         return ""
 
     def search(self, query: str) -> List[Dict]:

@@ -3,6 +3,7 @@ import json
 import sys
 from typing import Dict, List, Optional, Tuple
 
+from ._http_log import timed
 from .base import BaseScraper
 from .gogoanime import GogoAnimeScraper
 from .mkissa import MkissaScraper
@@ -117,7 +118,8 @@ class ProviderManager:
                 sys.stderr.write(msg)
 
         for name, scraper in self._get_ordered_providers(lang_clean, provider_clean):
-            _log(f"[?] Attempting provider: {name}...\n")
+            _browser = " (browser)" if getattr(scraper, "requires_browser", False) else ""
+            _log(f"[?] Attempting provider: {name}{_browser}...\n")
             context = {
                 "anime": anime_title,
                 "episode": str(episode_num),
@@ -126,12 +128,13 @@ class ProviderManager:
                 "translation_mode": (mode or "sub").lower(),
             }
             try:
-                result = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        self._try_provider, scraper, anime_title, episode_num, mode
-                    ),
-                    timeout=_PROVIDER_TIMEOUT,
-                )
+                with timed(f"provider:{name}:total"):
+                    result = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            self._try_provider, scraper, anime_title, episode_num, mode
+                        ),
+                        timeout=_PROVIDER_TIMEOUT,
+                    )
                 if result:
                     url, headers = result
                     _log(f"[✓] Stream found via {name}!\n")
@@ -198,7 +201,8 @@ class ProviderManager:
         }
 
         try:
-            results = scraper.search(anime_title)
+            with timed(f"provider:{scraper.name}:search"):
+                results = scraper.search(anime_title)
         except Exception as exc:
             ProviderManager._report_error("Scraper search failed", context,
                                           exc_info=sys.exc_info())
@@ -217,7 +221,8 @@ class ProviderManager:
         try:
             if hasattr(scraper, "preferred_category"):
                 scraper.preferred_category = mode_clean
-            eps = scraper.get_episodes(anime_id)
+            with timed(f"provider:{scraper.name}:get_episodes"):
+                eps = scraper.get_episodes(anime_id)
         except Exception as exc:
             ProviderManager._report_error("Scraper episode list failed",
                                           dict(context, anime_id=str(anime_id)),
@@ -253,7 +258,8 @@ class ProviderManager:
                 pass
 
         try:
-            stream = scraper.get_stream_url(ep_id)
+            with timed(f"provider:{scraper.name}:get_stream_url"):
+                stream = scraper.get_stream_url(ep_id)
         except Exception as exc:
             ProviderManager._report_error("Scraper stream resolution failed",
                                           dict(context, episode_id=str(ep_id)),

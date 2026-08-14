@@ -73,6 +73,8 @@ def _resolve_vidwish(embed_url: str) -> str:
 
 class GogoAnimeScraper(BaseScraper):
 
+    requires_browser = False
+
     @property
     def name(self) -> str:
         return "gogoanime"

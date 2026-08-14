@@ -40,6 +40,8 @@ _SESSION.headers.update({"User-Agent": USER_AGENT, "Referer": REFERRER})
 
 class MkissaScraper(BaseScraper):
 
+    requires_browser = True
+
     @property
     def name(self) -> str:
         return "mkissa"
@@ -108,37 +110,17 @@ class MkissaScraper(BaseScraper):
         return {"stream_url": None, "headers": {}}
 
     def _try_playwright_extract(self, show_id: str, ep_no: str) -> Optional[Dict]:
-        try:
-            from playwright.sync_api import sync_playwright
-        except ImportError:
-            return None
+        # Uses the shared lazy browser runtime (browser launched once, reused).
+        from ._browser import browser_page
+        from ._http_log import timed
 
-        try:
-            from ..playwright_bootstrap import ensure_playwright_chromium
-            ensure_playwright_chromium()
-        except Exception:
-            pass
+        found = []
 
-        with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=True,
-                args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
-            )
-            ctx = browser.new_context(
-                user_agent=USER_AGENT,
-                viewport={"width": 1280, "height": 720},
-                locale="en-US",
-            )
-            ctx.add_init_script(
-                "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})"
-            )
-            page = ctx.new_page()
-            found_m3u8 = []
-
+        def _work(page):
             def on_response(resp):
                 url = resp.url
-                if ".m3u8" in url and url not in found_m3u8:
-                    found_m3u8.append(url)
+                if ".m3u8" in url and url not in found:
+                    found.append(url)
 
             page.on("response", on_response)
 
@@ -159,24 +141,30 @@ class MkissaScraper(BaseScraper):
                 page.goto(url, wait_until="commit", timeout=5000)
                 deadline = time.time() + _PLAYWRIGHT_TIMEOUT
                 while time.time() < deadline:
-                    if found_m3u8:
-                        browser.close()
-                        return {
-                            "stream_url": found_m3u8[0],
-                            "headers": {
-                                "Referer": REFERRER,
-                                "User-Agent": USER_AGENT,
-                            },
-                        }
+                    if found:
+                        return found[0]
                     page.wait_for_timeout(1000)
             except Exception:
                 pass
+            return found[0] if found else ""
 
-            browser.close()
+        try:
+            with timed("mkissa:playwright:extract"):
+                url = browser_page(
+                    _work,
+                    user_agent=USER_AGENT,
+                    viewport={"width": 1280, "height": 720},
+                    init_script=(
+                        "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})"
+                    ),
+                    timeout=_PLAYWRIGHT_TIMEOUT + 10.0,
+                )
+        except Exception:
+            url = None
 
-        if found_m3u8:
+        if url:
             return {
-                "stream_url": found_m3u8[0],
+                "stream_url": url,
                 "headers": {"Referer": REFERRER, "User-Agent": USER_AGENT},
             }
         return None

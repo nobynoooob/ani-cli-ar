@@ -4,6 +4,11 @@ from typing import Dict, List, Optional
 
 class BaseScraper(ABC):
 
+    #: True when this provider's normal resolution path needs a real browser
+    #: (Playwright). Fast HTTP-only scrapers stay False so the shared browser
+    #: runtime is never initialized for them.
+    requires_browser: bool = False
+
     @abstractmethod
     def search(self, query: str) -> List[Dict]:
         """Search for anime by title.

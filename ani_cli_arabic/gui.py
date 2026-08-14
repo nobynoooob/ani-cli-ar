@@ -19,6 +19,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed, wait
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .scrapers._http_log import timed
+
 from .version import APP_VERSION, __version__
 
 # Lazy imports so the GUI can fail fast with a friendly message when the
@@ -1646,11 +1648,12 @@ class JSApi:
         For a specific provider the episode list is fetched through the
         CLI-style id mapping (title search for non-miruro scrapers), so the
         AniList integer is never passed to another provider's resolver. The
-        chosen provider and the full auto chain are probed **concurrently**:
-        the first path to produce a usable stream wins, so a slow/broken
-        chosen provider (allanime/gogoanime/hianime/mkissa) no longer blocks
-        the fallback to miruro's working HLS stream. Entire call is bounded by
-        ``_CHOSEN_PROVIDER_TIMEOUT``. Never raises.
+        chosen provider is resolved **directly and alone** — no concurrent full
+        chain runs in the background (which previously launched Playwright for
+        every unrelated provider on each click). The auto chain is only used as
+        a strictly sequential last resort when the chosen provider produced no
+        usable stream, or directly when the user asked for ``auto``. Each stage
+        is bounded by ``_CHOSEN_PROVIDER_TIMEOUT``. Never raises.
         """
         pm = self._pm()
         anime_id = str(anime_id or "")
@@ -1726,28 +1729,37 @@ class JSApi:
                                             note="auto chain raised")
             return None
 
-        ex = ThreadPoolExecutor(max_workers=2)
-        try:
-            futs = {
-                ex.submit(_chosen): "chosen",
-                ex.submit(_auto): "auto",
-            }
+        def _run_bounded(fn, label):
+            """Run ``fn`` on one worker, bounded by _CHOSEN_PROVIDER_TIMEOUT."""
+            from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FutTimeout
+            ex = ThreadPoolExecutor(max_workers=1)
             try:
-                # as_completed yields winners as they arrive so a fast usable
-                # result returns instantly; its timeout breaks the deadlock if
-                # BOTH paths hang (none completed before the window elapsed).
-                for fut in as_completed(futs, timeout=_CHOSEN_PROVIDER_TIMEOUT):
-                    try:
-                        result = fut.result()
-                    except Exception:
-                        continue
-                    if result and self._is_usable_stream(result):
-                        return result
-            except Exception:
-                pass
-        finally:
-            ex.shutdown(wait=False)
-        return None
+                fut = ex.submit(fn)
+                try:
+                    with timed(label):
+                        return fut.result(timeout=_CHOSEN_PROVIDER_TIMEOUT)
+                except _FutTimeout:
+                    sys.stderr.write(f"[TIMING] {label} exceeded "
+                                     f"{_CHOSEN_PROVIDER_TIMEOUT}s — continuing\n")
+                    return None
+            finally:
+                ex.shutdown(wait=False)
+
+        # Direct execution: a specific provider is resolved ALONE (no concurrent
+        # full-chain fallback that would otherwise launch Playwright for every
+        # unrelated provider in the background). The auto chain only runs as a
+        # strictly sequential last resort once the chosen provider failed, or
+        # directly when the user asked for auto.
+        if provider:
+            chosen = _run_bounded(_chosen, "gui:chosen")
+            if self._is_usable_stream(chosen):
+                return chosen
+            fallback = _run_bounded(_auto, "gui:auto:fallback")
+            if self._is_usable_stream(fallback):
+                return fallback
+            return None
+
+        return _run_bounded(_auto, "gui:auto")
 
     @staticmethod
     def _is_usable_stream(result) -> bool:

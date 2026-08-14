@@ -17,6 +17,7 @@ current working directory.
 """
 import os
 import sys
+import time
 
 import httpx
 import requests
@@ -35,6 +36,32 @@ def _emit(line: str) -> None:
             f.write(line + "\n")
     except Exception:
         pass
+
+
+def log_timing(label: str, seconds: float) -> None:
+    """Emit a performance marker: ``[TIMING] <label> <milliseconds>ms``."""
+    _emit(f"[TIMING] {label} {seconds * 1000:.0f}ms")
+
+
+class timed:
+    """Context manager that logs elapsed wall-clock time under a label.
+
+    Example::
+
+        with timed("miruro:pipe:goto"):
+            page.goto(...)
+    """
+
+    def __init__(self, label: str):
+        self._label = label
+
+    def __enter__(self):
+        self._t0 = time.monotonic()
+        return self
+
+    def __exit__(self, *_exc):
+        log_timing(self._label, time.monotonic() - self._t0)
+        return False
 
 
 def response_hook(response) -> None:

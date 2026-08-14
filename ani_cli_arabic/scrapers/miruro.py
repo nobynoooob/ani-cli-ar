@@ -103,6 +103,8 @@ def _decode_pipe(raw: str) -> dict:
 
 class MiruroScraper(BaseScraper):
 
+    requires_browser = True
+
     _last_request_time = 0.0
     _rate_limit_lock = threading.Lock()
 
@@ -123,14 +125,12 @@ class MiruroScraper(BaseScraper):
             cls._last_request_time = time.time()
 
     def _pipe_fetch(self, payload: dict) -> Optional[dict]:
-        from playwright.sync_api import sync_playwright
-
-        try:
-            from ..playwright_bootstrap import configure_browsers_path, ensure_playwright_chromium
-            configure_browsers_path()
-            ensure_playwright_chromium()
-        except Exception:
-            pass
+        # Uses the shared lazy browser runtime: the headless Chromium launches
+        # ONCE and is reused across pipe calls (episodes fetch, sources fetch,
+        # pipe search) instead of a fresh browser per call. Fast HTTP scrapers
+        # never touch this code path.
+        from ._browser import browser_page
+        from ._http_log import timed
 
         last_error = None
         for attempt in range(_MAX_RETRIES):
@@ -140,39 +140,39 @@ class MiruroScraper(BaseScraper):
 
             self._respect_rate_limit()
 
+            def _fetch(page):
+                page.route("**/*", _block_heavy_resource)
+                with timed("miruro:pipe:goto"):
+                    page.goto(MIRURO_BASE, wait_until="networkidle", timeout=25000)
+                encoded = _encode_pipe(payload)
+                js = f"""
+                (async () => {{
+                    const r = await fetch("{MIRURO_PIPE}?e={encoded}");
+                    return {{status: r.status, text: await r.text()}};
+                }})()
+                """
+                with timed("miruro:pipe:fetch"):
+                    return page.evaluate(js)
+
             try:
-                with sync_playwright() as pw:
-                    browser = pw.chromium.launch(
-                        headless=True,
-                        args=["--no-sandbox", "--disable-dev-shm-usage"],
+                with timed("miruro:pipe:job"):
+                    result = browser_page(
+                        _fetch, user_agent=USER_AGENT, timeout=25.0
                     )
-                    try:
-                        context = browser.new_context(user_agent=USER_AGENT)
-                        try:
-                            page = context.new_page()
-                            page.route("**/*", _block_heavy_resource)
-                            page.goto(MIRURO_BASE, wait_until="networkidle", timeout=25000)
-                            encoded = _encode_pipe(payload)
-                            js = f"""
-                            (async () => {{
-                                const r = await fetch("{MIRURO_PIPE}?e={encoded}");
-                                return {{status: r.status, text: await r.text()}};
-                            }})()
-                            """
-                            result = page.evaluate(js)
-                            status = result.get("status")
-                            if status in _RETRYABLE_STATUS:
-                                last_error = f"status {status}"
-                                continue
-                            if status != 200:
-                                return None
-                            return _decode_pipe(result["text"].strip())
-                        finally:
-                            context.close()
-                    finally:
-                        browser.close()
             except Exception as e:
                 last_error = repr(e)
+                continue
+
+            if result is None:
+                last_error = "job timed out"
+                continue
+            status = result.get("status")
+            if status in _RETRYABLE_STATUS:
+                last_error = f"status {status}"
+                continue
+            if status != 200:
+                return None
+            return _decode_pipe(result["text"].strip())
 
         if last_error:
             from ._http_log import log_http_error

@@ -114,10 +114,9 @@ def extract_media_url(html: str) -> str:
 
 
 def _resolve_via_browser(embed_url: str, ref_url: str) -> str:
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        return ""
+    # Uses the shared lazy browser runtime (browser launched once, reused).
+    from ._browser import browser_page
+    from ._http_log import timed
 
     found = []
 
@@ -130,25 +129,7 @@ def _resolve_via_browser(embed_url: str, ref_url: str) -> str:
         u = _unescape(url.strip().rstrip('"').rstrip("'"))
         return u if _is_media_url(u) else ""
 
-    try:
-        from ..playwright_bootstrap import ensure_playwright_chromium
-        ensure_playwright_chromium()
-    except Exception:
-        pass
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
-        )
-        ctx = browser.new_context(
-            user_agent=USER_AGENT,
-            viewport={"width": 1280, "height": 720},
-        )
-        ctx.add_init_script(
-            "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})"
-        )
-        page = ctx.new_page()
+    def _work(page):
         page.on("request", maybe)
         page.on("response", maybe)
         page.route(
@@ -162,12 +143,24 @@ def _resolve_via_browser(embed_url: str, ref_url: str) -> str:
             page.wait_for_timeout(1500)
         except Exception:
             pass
-        content = ""
         try:
-            content = page.content()
+            return page.content()
         except Exception:
-            pass
-        browser.close()
+            return ""
+
+    try:
+        with timed("embed:browser:resolve"):
+            content = browser_page(
+                _work,
+                user_agent=USER_AGENT,
+                viewport={"width": 1280, "height": 720},
+                init_script=(
+                    "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})"
+                ),
+                timeout=12.0,
+            ) or ""
+    except Exception:
+        content = ""
 
     if found:
         return clean(found[0])
