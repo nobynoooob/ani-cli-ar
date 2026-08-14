@@ -31,6 +31,7 @@ import httpx
 
 from .base import BaseScraper
 from . import embeds
+from ._http_log import LoggingClient
 
 # Build id baked into the mkissa/allanime web client.
 BUILD_ID = "98"
@@ -170,7 +171,8 @@ _SHOW_QUERY = """\
 query ($showId: String!) { show( _id: $showId ) { \
 _id name availableEpisodesDetail availableEpisodes }}"""
 
-_CLIENT = httpx.Client(
+_CLIENT = LoggingClient(
+    "allanime",
     headers={"User-Agent": USER_AGENT, "Referer": REFERRER, "Content-Type": "application/json"},
     # mkissa/allanime API is fast when healthy; a tight cap turns upstream
     # stalls/blocking into an immediate None so the GUI can fall back.

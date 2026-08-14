@@ -7,6 +7,7 @@ import httpx
 
 from .base import BaseScraper
 from .embeds import probe_embeds, resolve_embed
+from ._http_log import LoggingClient
 
 BASE_URL = "https://gogoanime.co.za"
 USER_AGENT = (
@@ -15,7 +16,8 @@ USER_AGENT = (
     "Chrome/126.0.0.0 Safari/537.36"
 )
 
-_CLIENT = httpx.Client(
+_CLIENT = LoggingClient(
+    "gogoanime",
     headers={"User-Agent": USER_AGENT, "Referer": BASE_URL + "/"},
     timeout=httpx.Timeout(6.0, connect=4.0),
     follow_redirects=True,

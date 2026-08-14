@@ -8,6 +8,7 @@ from typing import Dict, List, Optional
 import requests
 
 from .base import BaseScraper
+from ._http_log import LoggingRequestsSession
 
 API_BASE = "https://api.mkissa.net"
 REFERRER = "https://mkissa.to"
@@ -33,7 +34,7 @@ _id availableEpisodesDetail }}"""
 # fallback short so it can't eat the whole provider allowance.
 _PLAYWRIGHT_TIMEOUT = 8.0
 
-_SESSION = requests.Session()
+_SESSION = LoggingRequestsSession("mkissa")
 _SESSION.headers.update({"User-Agent": USER_AGENT, "Referer": REFERRER})
 
 

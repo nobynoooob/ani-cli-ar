@@ -142,7 +142,8 @@ class ProviderManager:
                 self._report_error(f"{name} timed out after {_PROVIDER_TIMEOUT}s", context)
                 ProviderManager._log_debug(name, f"timed out after {_PROVIDER_TIMEOUT}s")
             except Exception as exc:
-                _log(f"[✗] {name} errored, skipping to next provider.\n")
+                _log(f"[✗] {name} errored ({type(exc).__name__}: {exc}), "
+                     f"skipping to next provider.\n")
                 self._report_error(f"{name} raised an unexpected error", context,
                                    exc_info=sys.exc_info())
                 ProviderManager._log_debug(

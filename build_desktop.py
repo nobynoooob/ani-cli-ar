@@ -140,6 +140,35 @@ def _create_browser_hook() -> "Path | None":
     return hook
 
 
+def _create_ssl_certs_hook() -> Path:
+    """Write a PyInstaller runtime hook that wires the bundled certifi CA
+    bundle into the SSL machinery before any app code runs.
+
+    In the frozen build the certifi package and its ``cacert.pem`` live under
+    ``$MEIPASS/certifi/``. Pointing ``SSL_CERT_FILE`` / ``REQUESTS_CA_BUNDLE`` /
+    ``CURL_CA_BUNDLE`` at that file makes every https client (httpx, requests,
+    curl_cffi, websockets) verify against the bundled bundle — otherwise a
+    missing/broken CA store in the build environment silently turns every
+    stream-resolution request into ``stream_url: null`` with no exception."""
+    hook = ROOT / "build" / "_ssl_certs_hook.py"
+    hook.parent.mkdir(exist_ok=True)
+    hook.write_text(
+        "import os\n"
+        "import sys\n"
+        "\n"
+        "if getattr(sys, 'frozen', False):\n"
+        "    meipass = getattr(sys, '_MEIPASS', None)\n"
+        "    if meipass:\n"
+        "        cafile = os.path.join(meipass, 'certifi', 'cacert.pem')\n"
+        "        if os.path.isfile(cafile):\n"
+        "            os.environ.setdefault('SSL_CERT_FILE', cafile)\n"
+        "            os.environ.setdefault('REQUESTS_CA_BUNDLE', cafile)\n"
+        "            os.environ.setdefault('CURL_CA_BUNDLE', cafile)\n",
+        encoding="utf-8",
+    )
+    return hook
+
+
 def _webview_platform_imports() -> list:
     """pywebview backends are loaded dynamically at runtime (guilib.initialize
     picks one per OS). Enumerate the platform modules that actually exist in
@@ -532,9 +561,20 @@ def build():
         browser_hook = _create_browser_hook()
         print(f"[*] Bundling Playwright browsers from: {browser_dir}")
 
+    # ----- SSL CA bundle (certifi) ------------------------------------------
+    try:
+        import certifi
+        # Explicitly bundle certifi's CA bundle into <bundle>/certifi/. Even
+        # though PyInstaller usually has a hook for this, being explicit plus
+        # the _ssl_certs_hook (below) makes the frozen build deterministic.
+        add_data.append((os.fspath(certifi.where()), "certifi"))
+    except Exception:
+        pass
+
     # Strip debug symbols from the frozen executable and every bundled shared
     # library (POSIX only — PyInstaller has no strip support on Windows).
     strip = not args.no_strip and os.name != "nt"
+    ssl_hook = _create_ssl_certs_hook()
     spec = _write_spec(
         ROOT / "build" / f"{exe_name}.spec",
         entry=entry,
@@ -550,7 +590,7 @@ def build():
         collect_all=_collect_all(),
         excludes=_excludes(args.target, args.exclude_module),
         runtime_hooks=(
-            [str(browser_hook)] if browser_dir else []
+            [str(ssl_hook)] + ([str(browser_hook)] if browser_dir else [])
         ),
     )
 

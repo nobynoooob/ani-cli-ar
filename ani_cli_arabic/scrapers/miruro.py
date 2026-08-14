@@ -9,6 +9,7 @@ from typing import Dict, List, Optional
 import httpx
 
 from .base import BaseScraper
+from ._http_log import LoggingClient
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -53,7 +54,8 @@ _TRACKING_FRAGMENTS = (
     "quantcast",
 )
 
-_SEARCH_CLIENT = httpx.Client(
+_SEARCH_CLIENT = LoggingClient(
+    "miruro",
     headers={"Content-Type": "application/json", "User-Agent": USER_AGENT},
     timeout=10.0,
 )
@@ -124,7 +126,8 @@ class MiruroScraper(BaseScraper):
         from playwright.sync_api import sync_playwright
 
         try:
-            from ..playwright_bootstrap import ensure_playwright_chromium
+            from ..playwright_bootstrap import configure_browsers_path, ensure_playwright_chromium
+            configure_browsers_path()
             ensure_playwright_chromium()
         except Exception:
             pass
@@ -171,6 +174,10 @@ class MiruroScraper(BaseScraper):
             except Exception as e:
                 last_error = repr(e)
 
+        if last_error:
+            from ._http_log import log_http_error
+            log_http_error("miruro", "pipe", MIRURO_PIPE, exc=None,
+                           note=f"last_error={last_error[:300]}")
         return None
 
     def search(self, query: str) -> List[Dict]:

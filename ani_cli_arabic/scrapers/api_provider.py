@@ -4,6 +4,7 @@ from typing import Dict, List, Optional, Tuple
 import httpx
 
 from .base import BaseScraper
+from ._http_log import LoggingClient
 
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) "
@@ -24,7 +25,8 @@ _PROVIDERS = ["gogoanime", "aniwatch", "zoro"]
 
 _TIMEOUT = httpx.Timeout(8.0, connect=5.0)
 
-_CLIENT = httpx.Client(
+_CLIENT = LoggingClient(
+    "api",
     headers={"User-Agent": USER_AGENT},
     timeout=_TIMEOUT,
     follow_redirects=True,

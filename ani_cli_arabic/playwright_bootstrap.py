@@ -15,6 +15,24 @@ import sys
 from pathlib import Path
 
 
+def configure_browsers_path() -> None:
+    """Point Playwright at the user's browser cache when frozen.
+
+    Playwright's transport layer forces ``PLAYWRIGHT_BROWSERS_PATH=0`` for
+    PyInstaller/Nuitka apps (``playwright/_impl/_transport.py``), which puts the
+    driver in bundled-browsers mode and looks under ``driver/package/.local-browsers``
+    inside the extracted archive. Our releases deliberately do NOT bundle the
+    browser binaries, so we must pre-set the env var to the real user cache
+    location — Playwright uses ``setdefault``, so our value wins. Idempotent and
+    a no-op for non-frozen runs.
+    """
+    if not getattr(sys, "frozen", False):
+        return
+    if os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
+        return
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(_browser_bases()[0])
+
+
 def _browser_bases() -> list:
     """Default ms-playwright cache locations per OS (mirrors Playwright's own
     resolution when PLAYWRIGHT_BROWSERS_PATH is unset)."""
@@ -46,6 +64,7 @@ def ensure_playwright_chromium(force: bool = False) -> None:
     Playwright driver executables are bundled, so ``playwright.__main__`` can
     still download the browser into the user cache.
     """
+    configure_browsers_path()
     if not force and _chromium_present():
         return
     print("[*] Playwright Chromium not found — downloading (one-time).")

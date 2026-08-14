@@ -13,6 +13,7 @@ import httpx
 
 from .base import BaseScraper
 from .embeds import resolve_embed
+from ._http_log import LoggingClient
 
 BASE_URL = "https://hianime.to"
 # Some networks block the canonical domain; prioritize mirrors that actually
@@ -24,7 +25,8 @@ USER_AGENT = (
     "Chrome/124.0.0.0 Safari/537.36"
 )
 
-_CLIENT = httpx.Client(
+_CLIENT = LoggingClient(
+    "hianime",
     headers={
         "User-Agent": USER_AGENT,
         "Referer": BASE_URL + "/",
