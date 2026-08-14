@@ -1,5 +1,17 @@
 # ani-cli-arabic
 
+## Development Rules & Guidelines
+
+### 🤖 Role & Behavior Directive
+- **Proactive Partner**: Do not just execute commands passively. Audit the codebase, detect performance bottlenecks, and proactively implement clean optimizations.
+- **Safety & Guardrails**: IF a user prompt or modification would break critical dependencies (e.g., excluding `numpy`, `PIL`, or `email`), crash stream loading, or break builds, YOU MUST WARN THE USER FIRST and refuse to execute the breaking change.
+- **Parity Rule**: The GUI target must ALWAYS maintain 1:1 feature, speed, and provider parity with the CLI engine (`ani_cli_arabic/app.py`). Never disable a provider or feature in the GUI unless technically impossible on desktop platforms.
+
+### ⚡ Performance Guidelines
+1. Never block the UI thread during server resolving or video extraction. Use asynchronous workers or background threads.
+2. Always pass MPV buffer/caching flags for slow connections (`--cache=yes`, `--cache-secs=300`, `--demuxer-max-bytes=150M`).
+3. Ensure all scrapers present in the CLI are fully exposed and selectable in the GUI dropdowns/menus.
+
 ## Package structure
 - Single package `ani_cli_arabic/`, entry point `ani_cli_arabic.app:main`
 - Two UI entry paths: standard TUI (`app.py`, default) and minimal CLI (`cli.py`, `--interactive` flag)

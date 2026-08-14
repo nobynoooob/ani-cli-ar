@@ -25,7 +25,12 @@ class SettingsManager:
             "theme": "blue",
             "analytics": True,
             "preferred_language": "Arabic Sub",
-            "preferred_provider": ""
+            "preferred_provider": "",
+            "mpv_aspect_ratio": "auto",
+            "mpv_custom_keys": True,
+            "preroll_enabled": False,
+            "preroll_video_url": "",
+            "preroll_seconds": 5,
         }
         
         if not self.config_file.exists():

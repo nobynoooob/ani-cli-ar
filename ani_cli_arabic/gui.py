@@ -38,6 +38,7 @@ _ANILIST_GRAPHQL = "https://graphql.anilist.co"
 _PROVIDER_TIMEOUT = 3.5
 _CHOSEN_PROVIDER_TIMEOUT = 25.0
 _MAX_SEARCH_CACHE = 128
+_DETAIL_QUICK_WINDOW = 4.0
 
 # Arabic Subtitle track — routes the GUI to the Arabic API pipeline (same
 # scraper-less flow the CLI uses for "Arabic Sub").
@@ -53,6 +54,7 @@ query ($search: String, $page: Int, $perPage: Int) {
       id
       title { romaji english native }
       coverImage { large medium }
+      seasonYear
     }
   }
 }"""
@@ -211,6 +213,7 @@ def _anilist_search(query: str, limit: int = 30) -> List[Dict[str, Any]]:
                 "id": str(m.get("id")),
                 "title": t.get("english") or t.get("romaji") or "",
                 "poster": cover.get("large") or cover.get("medium"),
+                "year": m.get("seasonYear"),
             })
         return [x for x in out if x["id"] and x["title"]]
     except Exception:
@@ -343,6 +346,7 @@ class JSApi:
         self._player = None
         self._watch_host = None
         self._watch_guest = None
+        self._history = None
         self._search_cache: OrderedDict[str, List[Dict]] = OrderedDict()
         self._ep_cache: OrderedDict[str, List[Dict]] = OrderedDict()
         self._raw_eps_cache: OrderedDict[str, List[Dict]] = OrderedDict()
@@ -350,6 +354,7 @@ class JSApi:
         self._provider_id_cache: OrderedDict[str, Optional[str]] = OrderedDict()
         self._hit_eps_cache: OrderedDict[str, Optional[int]] = OrderedDict()
         self._arabic_anime_cache: OrderedDict[str, Optional[Dict]] = OrderedDict()
+        self._schedule_cache: OrderedDict[str, List[Dict]] = OrderedDict()
         self._refine_inflight: set = set()
         self._lock = threading.Lock()
         self._cache_lock = threading.RLock()
@@ -378,6 +383,12 @@ class JSApi:
             from .player import PlayerManager
             self._player = PlayerManager()
         return self._player
+
+    def _history_mgr(self):
+        if self._history is None:
+            from .history import HistoryManager
+            self._history = HistoryManager()
+        return self._history
 
     # ------------------------------------------------------------------
     # info
@@ -510,6 +521,7 @@ class JSApi:
                 "title": hit["title"],
                 "provider": "miruro",
                 "poster": hit.get("poster") or self._poster_for(aid),
+                "year": hit.get("year"),
                 "providers": [],
             })
 
@@ -688,6 +700,79 @@ class JSApi:
         except Exception:
             return []
 
+    def get_schedule(self, day: str = "") -> List[Dict]:
+        """AniList airing schedule for the coming week, optionally filtered to a
+        single weekday. Day keys are lowercase 3-letter abbreviations
+        (``"sun"``..``"sat"``); pass ``""`` for everything. Backed by a weekly
+        cache so the frontend day filter is instant after the first fetch.
+        """
+        day = (day or "").strip().lower()
+        key = "week"
+        with self._lock:
+            items = self._schedule_cache.get(key)
+        if items is None:
+            items = self._fetch_schedule()
+            with self._lock:
+                self._cache_put(self._schedule_cache, key, items, 4)
+        if day:
+            items = [x for x in items if (x.get("day") or "").lower() == day]
+        return list(items)
+
+    def _fetch_schedule(self) -> List[Dict]:
+        """Pull currently-airing anime with next-airing timestamps, bucketed by
+        weekday. Non-fatal: returns [] on any failure (the UI renders an empty
+        schedule bar). Sorted by airing time, soonest first."""
+        out: List[Dict] = []
+        try:
+            import datetime
+            import httpx
+            r = httpx.post(
+                _ANILIST_GRAPHQL,
+                json={
+                    "query": """\
+                    query ($page: Int, $perPage: Int) {
+                      Page(page: $page, perPage: $perPage) {
+                        media(status: RELEASING, sort: [POPULARITY_DESC], type: ANIME) {
+                          id
+                          title { romaji english }
+                          coverImage { large }
+                          episodes
+                          nextAiringEpisode { episode airingAt }
+                        }
+                      }
+                    }""",
+                    "variables": {"page": 1, "perPage": 60},
+                },
+                timeout=10.0,
+            )
+            if r.status_code != 200:
+                return out
+            media = (r.json().get("data") or {}).get("Page") or {}
+            now_ts = time.time()
+            for m in media.get("media") or []:
+                t = m.get("title") or {}
+                nxt = m.get("nextAiringEpisode") or {}
+                airing_at = nxt.get("airingAt")
+                if not airing_at:
+                    continue
+                try:
+                    day = datetime.datetime.fromtimestamp(airing_at).strftime("%a").lower()
+                except Exception:
+                    day = ""
+                out.append({
+                    "id": str(m.get("id")),
+                    "title": t.get("english") or t.get("romaji") or "",
+                    "poster": (m.get("coverImage") or {}).get("large") or "",
+                    "episode": nxt.get("episode"),
+                    "airing_at": int(airing_at),
+                    "day": day,
+                    "in": max(0, int(airing_at - now_ts)),
+                })
+        except Exception:
+            return []
+        out.sort(key=lambda x: x.get("airing_at") or 0)
+        return [x for x in out if x["id"] and x["title"] and x["day"]]
+
     def get_anime_meta(self, anime_id: str) -> Dict[str, Any]:
         """Return AniList metadata only — instant (cached), never probes
         providers. Used to paint the details hero immediately."""
@@ -705,10 +790,13 @@ class JSApi:
     ) -> Dict[str, Any]:
         """Return metadata + episodes + available providers for one title.
 
-        Provider episode lists are probed **in parallel** with a strict
-        per-provider timeout so dead/slow scrapers cannot block the UI. The
-        requested ``provider`` (or the first that returns episodes) gets a
-        longer allowance since the UI waits for its full episode list anyway.
+        Instant fast path: metadata paints immediately and the provider chain is
+        probed in parallel with a strict ``_DETAIL_QUICK_WINDOW`` cap — the first
+        provider to return episodes wins, honouring an explicit ``provider``
+        pick. The accurate per-provider availability probe keeps running in the
+        background and delivers the final result via a ``details-refreshed``
+        DOM event so the details view re-renders in place. Every provider is
+        reported as selectable (parity with the CLI chain); none are disabled.
         """
         anime_id = str(anime_id or "")
         if category == ARABIC_CATEGORY:
@@ -723,35 +811,11 @@ class JSApi:
         meta = self.get_anime_meta(anime_id)
         meta = dict(meta)  # copy: never mutate the lru_cached metadata object
         pm = self._pm()
-        providers = []
-        for name in pm.available_providers:
-            if pm._providers.get(name):
-                providers.append({"name": name, "available": False})
+        names = [n for n in pm.available_providers if pm._providers.get(n)]
+        providers = [{"name": n, "available": True} for n in names]
 
-        def _probe(name):
-            return self._episode_list(name, anime_id, category)
-
-        # Parallel availability probe; chosen provider is resolved first and
-        # re-fetched below with the full episode list allowance.
-        results_map = self._parallel_probe_detail(
-            [p["name"] for p in providers], _probe, chosen=provider
-        )
-
-        chosen = None
-        for p in providers:
-            eps = results_map.get(p["name"]) or []
-            p["available"] = len(eps) > 0
-            if chosen is None and eps:
-                chosen = p["name"]
-
-        if provider and provider in results_map and results_map[provider]:
-            chosen = provider
-
-        # Full episode list. For the chosen provider the parallel probe has it
-        # unless it timed out; otherwise fetch it directly now.
-        episodes = results_map.get(chosen) or self._episode_list(chosen, anime_id, category)
-        if not isinstance(episodes, list):
-            episodes = []
+        # Instant fast path: parallel probe, first provider with episodes wins.
+        episodes, chosen = self._first_episodes(names, anime_id, category, provider)
 
         meta["providers"] = providers
         meta["category"] = category
@@ -759,7 +823,115 @@ class JSApi:
         meta["episodes"] = episodes
 
         self._cache_put(self._detail_cache, cache_key, dict(meta), 64)
+
+        # Background: accurate availability + best episode list, then event.
+        self._kick_detail_refresh(anime_id, provider, category, cache_key)
         return meta
+
+    def _first_episodes(self, names, anime_id, category, provider=None):
+        """Fast parallel episode probe.
+
+        Returns ``(episodes, chosen_provider)`` as soon as a provider yields
+        episodes (honouring an explicit ``provider`` pick), bounded by
+        ``_DETAIL_QUICK_WINDOW`` plus a short grace for the explicit provider.
+        Never raises; returns ``([], None)`` when nothing resolved.
+        """
+        names = [n for n in names if n]
+        if not names:
+            return [], None
+
+        def _probe(n):
+            return self._episode_list(n, anime_id, category)
+
+        ex = ThreadPoolExecutor(max_workers=min(len(names), 6))
+        futs = {ex.submit(_probe, n): n for n in names}
+        completed = {}
+        winner = None
+        try:
+            for fut in as_completed(list(futs), timeout=_DETAIL_QUICK_WINDOW):
+                n = futs[fut]
+                try:
+                    eps = fut.result(timeout=0)
+                except Exception:
+                    eps = []
+                completed[n] = eps
+                if eps and (n == provider or provider is None):
+                    winner = (list(eps), n)
+                    break
+        except TimeoutError:
+            pass
+
+        if winner is None and provider and provider in futs and provider not in completed:
+            try:
+                eps = futs[provider].result(timeout=1.5)
+            except Exception:
+                eps = []
+            if eps:
+                completed[provider] = eps
+                winner = (list(eps), provider)
+
+        ex.shutdown(wait=False)
+
+        if winner is not None:
+            return winner
+        for n in names:
+            eps = completed.get(n) or []
+            if eps:
+                return list(eps), n
+        return [], None
+
+    def _kick_detail_refresh(self, anime_id, provider, category, cache_key) -> None:
+        """Start the background details worker (single-shot daemon thread)."""
+
+        def worker():
+            try:
+                self._refresh_detail(anime_id, provider, category, cache_key)
+            except Exception:
+                pass
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _refresh_detail(self, anime_id, provider, category, cache_key) -> None:
+        """Accurate per-provider details probe run off the UI thread.
+
+        Mirrors the old blocking ``get_anime_details`` flow (parallel probe with
+        the full chosen-provider allowance) but delivers the result through the
+        cache + ``details-refreshed`` event instead of blocking the caller.
+        """
+        pm = self._pm()
+        names = [n for n in pm.available_providers if pm._providers.get(n)]
+
+        def _probe(n):
+            return self._episode_list(n, anime_id, category)
+
+        results_map = self._parallel_probe_detail(names, _probe, chosen=provider)
+
+        providers = []
+        chosen = None
+        for n in names:
+            eps = results_map.get(n) or []
+            providers.append({"name": n, "available": len(eps) > 0})
+            if chosen is None and eps:
+                chosen = n
+        if provider and results_map.get(provider):
+            chosen = provider
+
+        episodes = results_map.get(chosen) or []
+        if not isinstance(episodes, list):
+            episodes = []
+
+        meta = self.get_anime_meta(anime_id)
+        meta = dict(meta)
+        meta["providers"] = providers
+        meta["category"] = category
+        meta["selected_provider"] = chosen
+        meta["episodes"] = episodes
+        self._cache_put(self._detail_cache, cache_key, dict(meta), 64)
+        self._dispatch_event("details-refreshed", {
+            "anime_id": str(anime_id),
+            "category": category,
+            **meta,
+        })
 
     def _arabic_details(self, anime_id: str) -> Dict[str, Any]:
         """Details payload for the AR Sub track: metadata + Arabic-API episodes.
@@ -1095,14 +1267,17 @@ class JSApi:
         self._cache_put(self._ep_cache, ep_key, eps, 128)
         return eps
 
-    def _arabic_quality_key(self) -> str:
-        """Map the user's default_quality setting to an Arabic server key."""
-        try:
-            from .settings import SettingsManager
-            quality = (SettingsManager().get("default_quality", "1080p") or "1080p").strip().lower()
-        except Exception:
-            quality = "1080p"
-        return _ARABIC_QUALITY_KEYS.get(quality, "FRLink")
+    def _arabic_quality_key(self, resolution: str = "auto") -> str:
+        """Map a resolution (or the user's default_quality setting) to an
+        Arabic server key."""
+        resolution = (resolution or "auto").strip().lower()
+        if resolution in ("auto", "", "best", "highest"):
+            try:
+                from .settings import SettingsManager
+                resolution = (SettingsManager().get("default_quality", "1080p") or "1080p").strip().lower()
+            except Exception:
+                resolution = "1080p"
+        return _ARABIC_QUALITY_KEYS.get(resolution, "FRLink")
 
     @staticmethod
     def _extract_subtitle_tracks(server_data) -> List[str]:
@@ -1135,7 +1310,7 @@ class JSApi:
             tracks = []
         return tracks
 
-    def _resolve_arabic_stream(self, anime_id: str, ep_num) -> Optional[Dict]:
+    def _resolve_arabic_stream(self, anime_id: str, ep_num, resolution: str = "auto") -> Optional[Dict]:
         """Resolve an AR Sub stream through the Arabic API (CLI pipeline).
 
         Mirrors ``watch_together._resolve_arabic``/``cli.play_video``:
@@ -1167,7 +1342,7 @@ class JSApi:
             if not server_data:
                 return None
             current_ep = server_data.get("CurrentEpisode") or {}
-            server_key = self._arabic_quality_key()
+            server_key = self._arabic_quality_key(resolution)
             server_id = current_ep.get(server_key) or current_ep.get("FRLink")
             if not server_id:
                 return None
@@ -1234,6 +1409,7 @@ class JSApi:
         player_choice: str = "mpv",
         provider: Optional[str] = None,
         category: str = "sub",
+        resolution: str = "auto",
     ) -> Dict:
         """Resolve the best stream for (anime_id, ep) and launch the selected
         player. Returns ``{"ok": bool, "player": str, "url": str|None,
@@ -1241,9 +1417,20 @@ class JSApi:
 
         ``provider`` selects a specific source and ``category`` the sub/dub
         track, matching the server pill the user picked in the details view.
+        ``resolution`` (``"auto"``/``"1080p"``/``"720p"``/``"480p"``) selects
+        the stream quality: the Arabic track switches the quality server, the
+        English HLS track is pre-filtered to the best matching rendition.
+
+        When a Watch Together room is active the host player is bound to the
+        room's IPC socket / rc port so playback syncs (guests join automatically
+        from the host broadcast). Guests cannot start playback on their own.
         """
         anime_id = str(anime_id or "")
         title = ""
+        guest = self._watch_guest
+        host = self._watch_host
+        if guest is not None and getattr(guest, "is_active", False):
+            return {"ok": False, "error": "You are a guest — the host controls playback in the room."}
         try:
             episodes = self.get_episodes(anime_id, provider, category)
         except Exception:
@@ -1264,7 +1451,7 @@ class JSApi:
         title = meta.get("title") or self._anime_title(anime_id)
 
         try:
-            stream = self._resolve_stream(anime_id, ep_num, provider, category)
+            stream = self._resolve_stream(anime_id, ep_num, provider, category, resolution)
         except Exception as exc:
             return {"ok": False, "error": f"Stream resolution failed: {exc}"}
 
@@ -1275,17 +1462,168 @@ class JSApi:
         headers = (stream or {}).get("headers") or {}
         subtitles = (stream or {}).get("subtitles") or []
         player_choice = (player_choice or "mpv").lower()
+
+        # Watch Together: bind the launched player to the room's transport and
+        # broadcast the load so guests auto-join. The host player kind always
+        # wins over the dropdown so the sync transport matches.
+        ipc_socket = None
+        rc_port = None
+        if host is not None and getattr(host, "is_active", False):
+            player_choice = getattr(host, "player_kind", "mpv") or "mpv"
+            if player_choice == "vlc":
+                rc_port = host.rc_port
+            else:
+                ipc_socket = host.socket_path
+            try:
+                host.notify_load(
+                    title, int(ep_num),
+                    self._watch_language_label(category),
+                    url=url, headers=headers,
+                )
+            except Exception:
+                pass
+
+        # Player preferences from settings: custom aspect-ratio override and the
+        # app's custom keyboard hotkeys (enforced on the native mpv window).
+        aspect = None
+        custom_hotkeys = False
         try:
-            self._player_mgr().play(
+            from .settings import SettingsManager
+            _settings = SettingsManager()
+            aspect = str(_settings.get("mpv_aspect_ratio", "auto") or "auto")
+            custom_hotkeys = bool(_settings.get("mpv_custom_keys", True))
+        except Exception:
+            pass
+
+        # Continue Watching: sample mpv time-pos/duration via IPC during playback
+        # and persist progress after the player exits (best-effort).
+        progress_holder = {"pos": None, "dur": None}
+
+        def _progress_cb(pos, dur):
+            progress_holder["pos"] = pos
+            progress_holder["dur"] = dur
+
+        try:
+            self._player_mgr().play_with_quality_fallback(
                 url,
                 title=f"{title} - Ep {int(ep_num)}",
                 player_type=player_choice,
                 headers=headers,
                 subtitles=subtitles,
+                ipc_socket=ipc_socket,
+                rc_port=rc_port,
+                aspect=aspect,
+                custom_hotkeys=custom_hotkeys,
+                progress_cb=_progress_cb,
+                resolution=resolution,
             )
         except Exception as exc:
+            if host is not None and getattr(host, "is_active", False):
+                try:
+                    host.notify_stop()
+                except Exception:
+                    pass
             return {"ok": False, "error": f"Failed to launch {player_choice}: {exc}"}
+
+        # Persist playback progress for the Continue Watching row.
+        try:
+            poster = (meta or {}).get("poster") or ""
+            self._history_mgr().record_progress(
+                anime_id,
+                int(ep_num),
+                title,
+                poster=poster,
+                position=progress_holder.get("pos"),
+                total=progress_holder.get("dur"),
+            )
+        except Exception:
+            pass
+
+        if host is not None and getattr(host, "is_active", False):
+            try:
+                host.notify_stop()
+            except Exception:
+                pass
         return {"ok": True, "player": player_choice, "url": url}
+
+    def get_continue_watching(self, limit: int = 12) -> List[Dict]:
+        """Return continue-watching items (from local playback history),
+        newest-first. Each entry carries anime_id, title, episode, poster and
+        progress (0..1) for the warm-orange progress bars."""
+        try:
+            return self._history_mgr().get_continue_watching(limit=int(limit or 12))
+        except Exception:
+            return []
+
+    def record_progress(self, anime_id: str, episode_num, title: str = "", poster: str = "", position=None, total=None) -> bool:
+        """Persist playback progress for one title (Continue Watching)."""
+        try:
+            self._history_mgr().record_progress(
+                str(anime_id or ""), episode_num, title, poster=poster,
+                position=position, total=total,
+            )
+            return True
+        except Exception:
+            return False
+
+    # ------------------------------------------------------------------
+    # Bookmark / My List bridges
+    # ------------------------------------------------------------------
+    def toggle_bookmark(self, anime_id: str, title: str = "", poster: str = "", year=None) -> bool:
+        """Add or remove a title from My List. Returns the new state."""
+        try:
+            return self._history_mgr().toggle_bookmark(
+                str(anime_id or ""), title=title, poster=poster, year=year
+            )
+        except Exception:
+            return False
+
+    def is_bookmarked(self, anime_id: str) -> bool:
+        try:
+            return self._history_mgr().is_bookmarked(str(anime_id or ""))
+        except Exception:
+            return False
+
+    def get_bookmarks(self, limit: int = 50) -> List[Dict]:
+        """My List items newest-first: anime_id, title, poster, year, added."""
+        try:
+            return self._history_mgr().get_bookmarks(limit=int(limit or 50))
+        except Exception:
+            return []
+
+    # ------------------------------------------------------------------
+    # Frontend-facing settings (pre-roll ad buffer, playback prefs)
+    # ------------------------------------------------------------------
+    def get_settings(self) -> Dict:
+        """Return the app settings the UI needs (pre-roll ad slot, playback)."""
+        try:
+            from .settings import SettingsManager
+            s = SettingsManager()
+            return {
+                "preroll_enabled": bool(s.get("preroll_enabled", False)),
+                "preroll_video_url": str(s.get("preroll_video_url", "") or ""),
+                "preroll_seconds": int(s.get("preroll_seconds", 5) or 5),
+                "default_quality": str(s.get("default_quality", "1080p") or "1080p"),
+                "mpv_aspect_ratio": str(s.get("mpv_aspect_ratio", "auto") or "auto"),
+                "mpv_custom_keys": bool(s.get("mpv_custom_keys", True)),
+            }
+        except Exception:
+            return {
+                "preroll_enabled": False,
+                "preroll_video_url": "",
+                "preroll_seconds": 5,
+                "default_quality": "1080p",
+                "mpv_aspect_ratio": "auto",
+                "mpv_custom_keys": True,
+            }
+
+    @staticmethod
+    def _watch_language_label(category) -> str:
+        if category == ARABIC_CATEGORY:
+            return "Arabic Sub"
+        if category == "dub":
+            return "English Dub"
+        return "English Sub"
 
     def _anime_title(self, anime_id: str) -> str:
         meta = self._anilist_details(anime_id) or {}
@@ -1297,8 +1635,13 @@ class JSApi:
         ep_num,
         provider: Optional[str],
         category: str = "sub",
+        resolution: str = "auto",
     ):
         """Resolve a stream dict for a given episode via the provider chain.
+
+        ``resolution`` (``"auto"``/``"1080p"``/``"720p"``/``"480p"``) selects
+        the quality: the Arabic track picks the matching quality server here;
+        the English HLS track is filtered at player launch instead.
 
         For a specific provider the episode list is fetched through the
         CLI-style id mapping (title search for non-miruro scrapers), so the
@@ -1315,7 +1658,7 @@ class JSApi:
         # AR Sub is a separate pipeline backed by the Arabic API — it never
         # mixes with (or falls back to) the English scraper chain.
         if category == ARABIC_CATEGORY:
-            return self._resolve_arabic_stream(anime_id, ep_num)
+            return self._resolve_arabic_stream(anime_id, ep_num, resolution)
 
         def _chosen():
             """Episode-list + get_stream_url for the explicit provider."""
@@ -1484,6 +1827,21 @@ class JSApi:
             return {"active": True, "role": "guest", "code": self._watch_guest.code}
         return {"active": False, "role": None, "code": None}
 
+    def room_members(self) -> List[Dict]:
+        """Return the current Watch Together roster (``[{"name", "role"}...]``)
+        so the status bar can show who is in the room."""
+        if self._watch_host is not None:
+            return [
+                {"name": name, "role": role}
+                for name, role in self._watch_host.members.items()
+            ]
+        if self._watch_guest is not None:
+            return [
+                {"name": name, "role": role}
+                for name, role in self._watch_guest.members.items()
+            ]
+        return []
+
 
 def _index_html_path() -> str:
     """Return the filesystem path to the bundled index.html.
@@ -1514,7 +1872,7 @@ def run_gui(debug: bool = False) -> None:
         return
     api = JSApi()
     window = webview.create_window(
-        f"ani-cli-ar {APP_VERSION}",
+        f"AniNova AR {APP_VERSION}",
         _index_html_path(),
         js_api=api,
         width=1100,
