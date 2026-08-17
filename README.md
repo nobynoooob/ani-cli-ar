@@ -221,11 +221,8 @@ Chromium browser is **not** bundled — it downloads on first use.
 
 ## 👥 Contributors
 
-[![Contributors](https://contrib.rocks/image?repo=nobynoooob/ani-cli-ar)](https://github.com/nobynoooob/ani-cli-ar/graphs/contributors)
-
-**Key Contributors:**
-- [@np4abdou1](https://github.com/np4abdou1) - Creator and main developer
-- [@Anas-Tou](https://github.com/Anas-Tou) - Contributor
+**Creator & Maintainer:**
+- [@nobynoooob](https://github.com/nobynoooob) - Creator and maintainer
 
 Want to contribute? Feel free to open issues or submit pull requests!
 
