@@ -1,8 +1,0 @@
-[Desktop Entry]
-Name=ani-cli-ar GUI
-Comment=Arabic Anime Streaming Application
-Exec=/usr/local/bin/ani-cli-ar-gui
-Icon=ani-cli-ar
-Terminal=false
-Type=Application
-Categories=AudioVideo;Player;

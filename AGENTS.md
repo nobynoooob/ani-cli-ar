@@ -5,12 +5,12 @@
 ### 🤖 Role & Behavior Directive
 - **Proactive Partner**: Do not just execute commands passively. Audit the codebase, detect performance bottlenecks, and proactively implement clean optimizations.
 - **Safety & Guardrails**: IF a user prompt or modification would break critical dependencies (e.g., excluding `numpy`, `PIL`, or `email`), crash stream loading, or break builds, YOU MUST WARN THE USER FIRST and refuse to execute the breaking change.
-- **Parity Rule**: The GUI target must ALWAYS maintain 1:1 feature, speed, and provider parity with the CLI engine (`ani_cli_arabic/app.py`). Never disable a provider or feature in the GUI unless technically impossible on desktop platforms.
+- **CLI Focus**: This repository is the terminal CLI/TUI app only. The desktop GUI lives in the separate AniNova repository — do not reintroduce GUI code here.
 
 ### ⚡ Performance Guidelines
 1. Never block the UI thread during server resolving or video extraction. Use asynchronous workers or background threads.
 2. Always pass MPV buffer/caching flags for slow connections (`--cache=yes`, `--cache-secs=300`, `--demuxer-max-bytes=150M`).
-3. Ensure all scrapers present in the CLI are fully exposed and selectable in the GUI dropdowns/menus.
+3. Ensure all scrapers stay registered in `_PROVIDER_PRIORITY` / `ENGLISH_PROVIDERS` so the provider chain keeps working.
 
 ## Package structure
 - Single package `ani_cli_arabic/`, entry point `ani_cli_arabic.app:main`
@@ -95,9 +95,9 @@
 - `cryptography` (not pycryptodome) is required by `allanime.py` for the best-effort `tobeparsed` AES-256-CTR decrypt
 
 ## Packaging / releases
-- `build_desktop.py` supports `--target {gui,cli}` (default `gui`). GUI = windowed one-file exe with `ui/` assets; CLI = console one-file exe using `main.py`, excludes all GUI frameworks. `--exclude-module` adds exclusions, `--zip` produces `dist/<exe>.zip`.
-- Release binaries do **NOT** bundle the Playwright Chromium browser (that bloated old builds to 430 MB). The Playwright driver is still bundled via `--collect-all playwright`; on first stream use `playwright_bootstrap.ensure_playwright_chromium` downloads Chromium into the user's ms-playwright cache. numpy/PIL/email are **kept** in every build: importing the package (`ani_cli_arabic/__init__.py`) unconditionally pulls in `app` → `ui.py`, which does `import numpy` / `from PIL import Image, ImageEnhance` at module load (and httpx/websockets/cryptography import `email.*`). Excluding any of them crashes both GUI and CLI at startup.
-- `.github/workflows/build.yml` runs two matrix jobs (`build-gui`, `build-cli`) for windows/linux and a `release` job that uploads `ani-cli-ar-{gui,cli}-{windows,linux}` assets. Windows GUI bundles mpv; Linux/CLI rely on system mpv.
+- `build_cli.py` builds the console one-file CLI executable (PyInstaller spec generated at `build/<exe>.spec`); entry is `main.py`, all GUI frameworks excluded. `--exclude-module` adds exclusions, `--zip` produces `dist/<exe>.zip`.
+- Release binaries do **NOT** bundle the Playwright Chromium browser (that bloated old builds to 430 MB). The Playwright driver is still bundled via `--collect-all playwright`; on first use `playwright_bootstrap.ensure_playwright_chromium` downloads Chromium into the user's ms-playwright cache. numpy/PIL/email are **kept** in every build: importing the package (`ani_cli_arabic/__init__.py`) unconditionally pulls in `app` → `ui.py`, which does `import numpy` / `from PIL import Image, ImageEnhance` at module load (and httpx/websockets/cryptography import `email.*`). Excluding any of them crashes the CLI at startup.
+- `.github/workflows/build.yml` runs a single `build-cli` matrix job (windows/linux) and a `release` job that uploads `ani-cli-ar-cli-{windows,linux}` assets.
 
 ## Version / packaging
 - Single source of version: `ani_cli_arabic/version.py:__version__` (currently `1.8.4`)
