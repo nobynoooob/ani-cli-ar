@@ -1,5 +1,3 @@
-<h1 align="center">                          NEW MAJOR UPDATE COMING IN LATE SUMMER </h1> 
-
 <div align="center">
 
 <h2>💖 Support This Open Source Project</h2>
@@ -9,24 +7,24 @@
 </a>
 <br><br><br>
 
-Terminal-based anime streaming with Arabic subtitles
+**Lightweight terminal-based anime streaming with Arabic subtitles**
 
 <p align="center">
-  <a href="https://github.com/np4abdou1/ani-cli-arabic/stargazers">
-    <img src="https://img.shields.io/github/stars/np4abdou1/ani-cli-arabic?style=for-the-badge" />
+  <a href="https://github.com/nobynoooob/ani-cli-ar/stargazers">
+    <img src="https://img.shields.io/github/stars/nobynoooob/ani-cli-ar?style=for-the-badge" />
   </a>
-  <a href="https://github.com/np4abdou1/ani-cli-arabic/network">
-    <img src="https://img.shields.io/github/forks/np4abdou1/ani-cli-arabic?style=for-the-badge" />
+  <a href="https://github.com/nobynoooob/ani-cli-ar/network">
+    <img src="https://img.shields.io/github/forks/nobynoooob/ani-cli-ar?style=for-the-badge" />
   </a>
   <br>
-  <a href="https://github.com/np4abdou1/ani-cli-arabic/releases">
-    <img src="https://img.shields.io/github/v/release/np4abdou1/ani-cli-arabic?style=for-the-badge" />
+  <a href="https://github.com/nobynoooob/ani-cli-ar/releases">
+    <img src="https://img.shields.io/github/v/release/nobynoooob/ani-cli-ar?style=for-the-badge" />
   </a>
   <a href="https://pypi.org/project/ani-cli-arabic">
     <img src="https://img.shields.io/pypi/v/ani-cli-arabic?style=for-the-badge" />
   </a>
   <a href="https://aur.archlinux.org/packages/ani-cli-arabic">
-  <img src="https://img.shields.io/aur/version/ani-cli-arabic?style=for-the-badge" />
+    <img src="https://img.shields.io/aur/version/ani-cli-arabic?style=for-the-badge" />
   </a>
 </p>
 
@@ -37,37 +35,28 @@ Terminal-based anime streaming with Arabic subtitles
 
 <br>
 
+</div>
+
+---
+
 ## 📑 Navigation
 
 [Installation](#-installation) • [Features](#-what-can-you-do) • [How to Use](#-how-to-use) • [Keyboard Shortcuts](#️-keyboard-shortcuts) • [Configuration](#%EF%B8%8F-configuration) • [Contributors](#-contributors) • [License](#-license)
-
-<br><br>
-
-<p>لإختيار اللغة العربية اضغط على الزر: </p>
-<a href="README.ar.md">
-  <img src="https://img.shields.io/badge/Language-Arabic-green?style=for-the-badge&logo=google-translate&logoColor=white" alt="Arabic">
-</a>
-
-<br>
-<br>
-
-https://github.com/user-attachments/assets/a6c6882a-7c50-4a8d-aa9c-e56a6d4ff7eb
-
-</div>
 
 ---
 
 ## 📦 Installation
 
 ### Requirements
-Before installing, make sure you have: 
+Before installing, make sure you have:
 - **Python 3.8 or newer** (Python 3.12 recommended)
 - **MPV** or **VLC** media player (for streaming)
+- **Playwright Chromium** — auto-installed on first stream (`ensure_playwright_chromium`), no manual step needed
 
 ### Method 1: One-Line Installer (Recommended)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/np4abdou1/ani-cli-arabic/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/nobynoooob/ani-cli-ar/main/install.sh | sh
 ```
 
 This auto-detects your environment (Linux, macOS, Termux) and installs via `pipx` or `pip`.
@@ -76,7 +65,7 @@ This auto-detects your environment (Linux, macOS, Termux) and installs via `pipx
 
 ```bash
 # Direct from GitHub (always latest)
-pip install git+https://github.com/np4abdou1/ani-cli-arabic.git
+pip install git+https://github.com/nobynoooob/ani-cli-ar.git
 
 # Or from PyPI (stable releases)
 pip install ani-cli-ar
@@ -97,19 +86,25 @@ pip install --upgrade ani-cli-ar
 
 ### Method 3: Arch Linux (AUR)
 
-For Arch Linux users, install from the AUR: 
-
 ```bash
-yay -S ani-cli-ar
+yay -S ani-cli-arabic
 # or
-paru -S ani-cli-ar
+paru -S ani-cli-arabic
 ```
 
-### Method 4: From Source (Development)
+### Method 4: Pre-built Executables (Linux / Windows)
+
+Grab the standalone binaries from the [releases page](https://github.com/nobynoooob/ani-cli-ar/releases):
+- `ani-cli-ar-cli-linux.tar.gz` — extract, then `./ani-cli-ar-cli` (or `./install.sh`)
+- `ani-cli-ar-cli-windows.zip` — extract and run `ani-cli-ar-cli-windows.exe`
+
+No Python needed for the pre-built executables; only **mpv** (or VLC) is required.
+
+### Method 5: From Source (Development)
 
 ```bash
-git clone https://github.com/np4abdou1/ani-cli-arabic.git
-cd ani-cli-arabic
+git clone https://github.com/nobynoooob/ani-cli-ar.git
+cd ani-cli-ar
 pip install -e .
 ani-cli-ar
 ```
@@ -118,21 +113,26 @@ ani-cli-ar
 
 ## 🎯 What Can You Do?
 
-Here's everything this tool offers:
+Here's everything this terminal app offers:
 
 ### Streaming & Playback
 - **Multiple Quality Options**: Watch in 1080p, 720p, or 480p depending on your internet speed
 - **Batch Download**: Download multiple episodes at once to watch offline
 - **Trailer Support**: Watch YouTube trailers before committing to an anime
-- **Resume from History**: Pick up exactly where you left off ( buggy )
+- **Resume from History**: Pick up exactly where you left off
+- **mpv/VLC Support**: Choose your preferred media player (buffer/caching flags applied for slow connections)
 
 ### Discovery & Browsing
-- **Search Anime**: Find any anime and anime movie by name (supports both English and Japanese titles and arabic titles)
+- **Search Anime**: Find any anime or anime movie by name (English, Japanese, and Arabic titles)
 - **Trending Now**: See what's currently popular
 - **Top Rated**: Browse the highest-rated anime of all time
 - **Browse by Genre**: Filter by Action, Romance, Isekai, and 12 other genres
 - **Browse by Studio**: Find anime from Toei Animation, MAPPA, Ufotable, and 20+ more studios
 - **Latest Releases**: Stay updated with the newest anime
+
+### English + Arabic Tracks
+- **English**: multi-provider chain — Miruro, HiAnime, AllAnime, API, Mkissa, GogoAnime (provider chain with per-step failure isolation)
+- **Arabic**: dedicated Arabic API pipeline (`AnimeAPI`) with quality selection and Arabic subtitle tracks
 
 ### Personal Library
 - **Watch History**: Keep track of everything you've watched with timestamps
@@ -140,31 +140,28 @@ Here's everything this tool offers:
 - **Episode Tracking**: The app remembers which episode you're on
 
 ### Interface & Experience
-- **Rich TUI (Terminal User Interface)**: Beautiful terminal interface built with Rich library
-- **17 Color Themes**: Choose from blue, red, purple, sunset, mint, lavender, and more 
-- **Discord Rich Presence**: Show off what you're watching on Discord with anime posters 
-<img width="864" height="372" alt="image" src="https://github.com/user-attachments/assets/eb8c5bc1-84dc-46a0-9b06-7efc5a5fee6d" />
-
+- **Rich TUI**: Beautiful terminal interface built with the Rich library
+- **17 Color Themes**: blue, red, green, purple, cyan, yellow, pink, orange, teal, magenta, lime, coral, lavender, gold, mint, rose, sunset
+- **Discord Rich Presence**: Show what you're watching on Discord with anime posters
 - **Smooth Navigation**: Intuitive keyboard controls
+- **Minimal CLI Mode**: `--interactive "Naruto"` for quick searches (also auto-falls back when the terminal is too narrow)
 
 ### Technical Features
 - **Zero Ads**: Clean streaming experience
-- **Automatic Updates**: Built-in version checker notifies you of new releases, and yes this can be turned off.
-- **MPV/VLC Support**: Choose your preferred media player
-- **Dependency Auto-installer**: Automatically checks and installs missing dependencies, too lazy...
-- **CLI Mode**: Simple command-line mode for quick searches (`ani-cli-ar -i "Naruto"`) _interactive mode also runs if the terminal is too narrow_
-- **Cross-platform**: Works on Windows and Linux
+- **Automatic Updates**: Built-in version checker notifies you of new releases (can be turned off)
+- **Dependency Auto-installer**: Automatically checks and installs missing dependencies
+- **Cross-platform**: Works on Linux, Windows, and macOS (Termux supported)
 
 ---
 
 ## 🎮 How to Use
 
-1. **Launch the app**:  Run `ani-cli-arabic` or `ani-cli-ar`
-2. **Browse or Search**: Use the main menu to search, view trending, or browse genres
-3. **Select an Anime**: Navigate with arrow keys and press Enter
-4. **Pick an Episode**: Choose which episode to watch
-5. **Select Quality**: Pick your preferred video quality
-6. **Enjoy**: MPV will launch and start streaming
+1. **Launch the app**: run `ani-cli-arabic` or `ani-cli-ar`
+2. **Browse or Search**: use the main menu to search, view trending, or browse genres
+3. **Select an Anime**: navigate with arrow keys and press Enter
+4. **Pick an Episode**: choose which episode to watch
+5. **Select Quality**: pick your preferred video quality
+6. **Enjoy**: MPV (or VLC) will launch and start streaming
 
 You can also use interactive mode for quick searches:
 ```bash
@@ -192,45 +189,39 @@ ani-cli-ar -i "One Piece"
 
 Settings are stored locally in `~/.ani-cli-arabic/database/config.json`
 
-### Available Settings
-
 Access the settings menu from the main screen to customize:
 
-- **Default Quality**: Set your preferred quality (1080p, 720p, or 480p)
-- **Media Player**: Choose between MPV or VLC
+- **Default Quality**: 1080p, 720p, or 480p
+- **Media Player**: MPV or VLC
 - **Auto-next Episode**: Toggle automatic episode continuation
-- **Discord Rich Presence**:  Show or hide Discord activity
-- **Theme Color**: Pick from 17 beautiful color schemes: 
-  - blue, red, green, purple, cyan, yellow, pink, orange, teal, magenta
-  - lime, coral, lavender, gold, mint, rose, sunset
-- **Analytics**:  Opt-in/out of anonymous usage stats - this is auto enabled by default.
+- **Discord Rich Presence**: Show or hide Discord activity
+- **Theme Color**: Pick from 17 color schemes
+- **Analytics**: Opt-in/out of anonymous usage stats (auto-enabled by default)
 - **Update Checking**: Toggle automatic update notifications
 
-You can also manually edit the config file if you prefer. 
+You can also manually edit the config file if you prefer.
 
 ---
 
-## Star History
+## 🔧 Build & Release (for maintainers)
 
-<a href="https://www.star-history.com/#np4abdou1/ani-cli-arabic&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=np4abdou1/ani-cli-arabic&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=np4abdou1/ani-cli-arabic&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=np4abdou1/ani-cli-arabic&type=date&legend=top-left" />
- </picture>
-</a>
+Build the standalone CLI executable with `build_cli.py` (PyInstaller, GUI frameworks excluded):
+
+```bash
+python build_cli.py                          # dist/ani-cli-ar-cli
+python build_cli.py --zip                    # also produce a portable .zip
+python build_cli.py --exclude-module numpy   # extra exclusions
+```
+
+Releases are built automatically by `.github/workflows/build.yml` on `v*` tag pushes
+(`ani-cli-ar-cli-linux.tar.gz`, `ani-cli-ar-cli-windows.zip`). The Playwright
+Chromium browser is **not** bundled — it downloads on first use.
 
 ---
 
 ## 👥 Contributors
 
-Special thanks to everyone who helped make this project happen: 
-
-<div align="center">
-
-[![Contributors](https://contrib.rocks/image?repo=np4abdou1/ani-cli-arabic)](https://github.com/np4abdou1/ani-cli-arabic/graphs/contributors)
-
-</div>
+[![Contributors](https://contrib.rocks/image?repo=nobynoooob/ani-cli-ar)](https://github.com/nobynoooob/ani-cli-ar/graphs/contributors)
 
 **Key Contributors:**
 - [@np4abdou1](https://github.com/np4abdou1) - Creator and main developer
@@ -240,44 +231,11 @@ Want to contribute? Feel free to open issues or submit pull requests!
 
 ---
 
-## 🔧 Build & Release (for maintainers)
-
-### Build the package
-
-```bash
-# Install build tools
-pip install build twine
-
-# Build source distribution and wheel
-python -m build
-
-# Check the package
-twine check dist/*
-```
-
-### Publish to PyPI
-
-```bash
-# Upload to PyPI
-twine upload dist/*
-
-# Or for test PyPI first:
-# twine upload --repository-url https://test.pypi.org/legacy/ dist/*
-```
-
-### Installing from a local build
-
-```bash
-pip install dist/ani_cli_arabic-*.whl
-```
-
----
-
 ## 📄 License
 
-This project is licensed under the **GNU General Public License v3.0**. 
+This project is licensed under the **GNU General Public License v3.0**.
 
-You're free to use, modify, and distribute this software under the terms of the GPL-3.0 license.  See the [LICENSE](LICENSE) file for the full legal text.
+You're free to use, modify, and distribute this software under the terms of the GPL-3.0 license. See the [LICENSE](LICENSE) file for the full legal text.
 
 **In simple terms:**
 - ✅ Use it for personal or commercial purposes
@@ -292,15 +250,15 @@ You're free to use, modify, and distribute this software under the terms of the 
 
 ### ⚠️ Important Notice
 
-</div>
-
 > [! CAUTION]
 > **By using this software you understand:**
-> 
+>
 > - Anonymous usage statistics are collected for the GitHub page stats banner (can be disabled in settings)
-> - The project is licensed under GPL-3.0 - see [LICENSE](LICENSE) for details
+> - The project is licensed under GPL-3.0 — see [LICENSE](LICENSE) for details
 > - We do not host any content; all streams are from third-party sources
 > - This tool is for personal use and educational purposes only
+
+</div>
 
 ---
 
@@ -308,6 +266,4 @@ You're free to use, modify, and distribute this software under the terms of the 
 
 Made with ❤️ by the anime community
 
-[⭐ Star this repo](https://github.com/np4abdou1/ani-cli-arabic) | [🐛 Report bugs](https://github.com/np4abdou1/ani-cli-arabic/issues) | [💬 Discussions](https://github.com/np4abdou1/ani-cli-arabic/discussions)
-
-</div>
+[⭐ Star this repo](https://github.com/nobynoooob/ani-cli-ar) | [🐛 Report bugs](https://github.com/nobynoooob/ani-cli-ar/issues) | [💬 Discussions](https://github.com/nobynoooob/ani-cli-ar/discussions)
